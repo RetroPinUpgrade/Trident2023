@@ -1,3 +1,48 @@
+/****************************************************************
+ * Class - AudioHandler
+ * 
+ * This class wraps the different audio output options for 
+ * pinball machines (WAV Trigger, SB-100, SB-300, Squawk & Talk
+ * -51, etc.) to provide different output options. Additionally,
+ * it adds a bunch of audio management features:
+ * 
+ *   1) Different volume controls for FX, callouts, and music
+ *   2) Automatically ducks music behind callouts
+ *   3) Supports background soundtracks or looping songs
+ *   4) A sound can be queued to play at a future time
+ *   5) Callouts can be given different priorities
+ *   6) Queued callouts at the same priority will be stacked
+ *   
+ *   
+ * Typical usage:
+ *   A global variable of class "AudioHandler" is declared
+ *     (ex: "AudioHandler Audio;")
+ * 
+ *   During the setup() function:
+ *    Audio.InitDevices(AUDIO_PLAY_TYPE_WAV_TRIGGER | AUDIO_PLAY_TYPE_ORIGINAL_SOUNDS); // declare what type of audio should be supported
+ *    Audio.StopAllAudio(); // Stop any currently playing sounds 
+ *    Audio.SetMusicDuckingGain(12); // negative gain applied to music when callouts are being played
+ *    Audio.QueueSound(SOUND_EFFECT_MACHINE_INTRO, AUDIO_PLAY_TYPE_WAV_TRIGGER, CurrentTime+1200); // Play machine startup sound in 1.2 s
+ *   
+ *   Volumes set (pulled from EEPROM or set in setup routine):
+ *    Audio.SetMusicVolume(MusicVolume); // value from 0-10 (inclusive)
+ *    Audio.SetSoundFXVolume(SoundEffectsVolume); // value from 0-10 (inclusive)
+ *    Audio.SetNotificationsVolume(CalloutsVolume); // value from 0-10 (inclusive)
+ *   
+ *   During the loop():
+ *    Audio.Update(CurrentTime);
+ *   
+ *   During game play:
+ *    Audio.PlayBackgroundSong(songNum, true); // loop a background song
+ *    Audio.PlaySound(soundEffectNum, AUDIO_PLAY_TYPE_WAV_TRIGGER); // play sound effect through wav trigger
+ *    Audio.QueueSound(0x02, AUDIO_PLAY_TYPE_ORIGINAL_SOUNDS, CurrentTime); // Queue sound card command for now
+ *    Audio.QueueNotification(soundEffectNum, VoiceNotificationDurations[soundEffectNum-SOUND_EFFECT_VP_VOICE_NOTIFICATIONS_START], priority, CurrentTime); // Queue notification
+ *    
+ *   End of ball:
+ *    Audio.StopAllAudio(); // Stop audio
+ */
+
+
 #include <Arduino.h>
 #include "AudioHandler.h"
 
@@ -569,9 +614,6 @@ boolean AudioHandler::PlaySound(unsigned short soundIndex, byte audioType, byte 
 #ifdef USE_WAV_TRIGGER
     wTrig.trackStop(soundIndex);
 #endif
-//    char buf[256];
-//    sprintf(buf, "Playind sound %d at gain %d\n", soundIndex, gain);
-//    Serial.write(buf);
 
     wTrig.trackPlayPoly(soundIndex);
     wTrig.trackGain(soundIndex, gain);
@@ -620,7 +662,11 @@ boolean AudioHandler::QueueSoundCardCommand(byte scFunction, byte scRegister, by
       return true;
     }
   }
-#endif  
+#else 
+  // Phony stuff to get rid of warnings
+  unsigned long totalval = scFunction + scRegister + scData + startTime;
+  totalval += 1;
+#endif
   return false;
 }
 
@@ -654,7 +700,10 @@ boolean AudioHandler::ServiceSoundCardQueue(unsigned long currentTime) {
   }
 
   return soundCommandSent;
-#else
+#else 
+  // Phony stuff to get rid of warnings
+  unsigned long totalval = currentTime;
+  totalval += 1;
   return false;
 #endif 
 }

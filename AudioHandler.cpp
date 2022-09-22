@@ -1,17 +1,17 @@
 /****************************************************************
  * Class - AudioHandler
  * 
- * This class wraps the different audio output options for 
- * pinball machines (WAV Trigger, SB-100, SB-300, Squawk & Talk
- * -51, etc.) to provide different output options. Additionally,
- * it adds a bunch of audio management features:
- * 
- *   1) Different volume controls for FX, callouts, and music
- *   2) Automatically ducks music behind callouts
- *   3) Supports background soundtracks or looping songs
- *   4) A sound can be queued to play at a future time
- *   5) Callouts can be given different priorities
- *   6) Queued callouts at the same priority will be stacked
+   * This class wraps the different audio output options for 
+   * pinball machines (WAV Trigger, SB-100, SB-300, Squawk & Talk
+   * -51, etc.) to provide different output options. Additionally,
+   * it adds a bunch of audio management features:
+   * 
+   *   1) Different volume controls for FX, callouts, and music
+   *   2) Automatically ducks music behind callouts
+   *   3) Supports background soundtracks or looping songs
+   *   4) A sound can be queued to play at a future time
+   *   5) Callouts can be given different priorities
+   *   6) Queued callouts at the same priority will be stacked
  *   
  *   
  * Typical usage:

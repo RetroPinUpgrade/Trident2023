@@ -75,7 +75,7 @@ byte DipSwitches[4];
 #endif
 
 
-#define SOLENOID_STACK_SIZE 64
+#define SOLENOID_STACK_SIZE 60
 #define SOLENOID_STACK_EMPTY 0xFF
 volatile byte SolenoidStackFirst;
 volatile byte SolenoidStackLast;
@@ -85,7 +85,7 @@ volatile byte CurrentSolenoidByte = 0xFF;
 volatile byte RevertSolenoidBit = 0x00;
 volatile byte NumCyclesBeforeRevertingSolenoidByte = 0;
 
-#define TIMED_SOLENOID_STACK_SIZE 32
+#define TIMED_SOLENOID_STACK_SIZE 30
 struct TimedSolenoidEntry {
   byte inUse;
   unsigned long pushTime;
@@ -95,7 +95,7 @@ struct TimedSolenoidEntry {
 };
 TimedSolenoidEntry TimedSolenoidStack[TIMED_SOLENOID_STACK_SIZE];
 
-#define SWITCH_STACK_SIZE   64
+#define SWITCH_STACK_SIZE   60
 #define SWITCH_STACK_EMPTY  0xFF
 volatile byte SwitchStackFirst;
 volatile byte SwitchStackLast;
@@ -1041,7 +1041,7 @@ byte BSOS_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagn
 
 void BSOS_SetDisplayBlank(int displayNumber, byte bitMask) {
   if (displayNumber<0 || displayNumber>4) return;
-  
+    
   DisplayDigitEnable[displayNumber] = bitMask;
 }
 
@@ -1244,17 +1244,18 @@ void BSOS_InitializeMPU() {
   delayMicroseconds(50000);
   delayMicroseconds(50000);
 
-
 #if (BALLY_STERN_OS_HARDWARE_REV==1) or (BALLY_STERN_OS_HARDWARE_REV==2)
+  // Assume Arduino pins all start as input
+
   // Start out with everything tri-state, in case the original
   // CPU is running
   // Set data pins to input
   // Make pins 2-7 input
-  DDRD = DDRD & 0x03;
+//  DDRD = DDRD & 0x03;
   // Make pins 8-13 input
-  DDRB = DDRB & 0xC0;
+//  DDRB = DDRB & 0xC0;
   // Set up the address lines A0-A5 as input (for now)
-  DDRC = DDRC & 0xC0;
+//  DDRC = DDRC & 0xC0;
 
   unsigned long startTime = millis();
   boolean sawHigh = false;
@@ -1262,7 +1263,7 @@ void BSOS_InitializeMPU() {
   // for three seconds, look for activity on the VMA line (A5)
   // If we see anything, then the MPU is active so we shouldn't run
   while ((millis()-startTime)<1000) {
-    if (digitalRead(A5)) sawHigh = true;
+    if (PINC&0x20) sawHigh = true;
     else sawLow = true;
   }
   // If we saw both a high and low signal, then someone is toggling the 
@@ -1276,6 +1277,7 @@ void BSOS_InitializeMPU() {
   for (byte count=2; count<32; count++) pinMode(count, INPUT);
 
   // Decide if halt should be raised (based on switch) 
+  
   pinMode(13, INPUT);
   if (digitalRead(13)==0) {
     // Switch indicates the Arduino should run, so HALT the 6800
@@ -1334,12 +1336,15 @@ void BSOS_InitializeMPU() {
   DDRD = DDRD & 0xEB;
   DDRD = DDRD | 0xE8;
 
-  digitalWrite(3, HIGH);  // Set R/W line high (Read)
-  digitalWrite(A5, LOW);  // Set VMA line LOW
+  // Set VMA OFF
+  PORTC = PORTC & 0xDF;
+
+  // Set R/W to HIGH
+  PORTD = (PORTD | 0x08);
 #endif 
 
-  // Interrupt line (IRQ)
-  pinMode(2, INPUT);
+  // Interrupt line (IRQ) - assume it's input
+//  pinMode(2, INPUT);
 
   // Prep the address bus (all lines zero)
   BSOS_DataRead(0);

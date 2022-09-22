@@ -40,15 +40,22 @@
 #define MACHINE_STATE_ADJUST_CPC_CHUTE_2        -18
 #define MACHINE_STATE_ADJUST_CPC_CHUTE_3        -19
 
+#ifdef ENABLE_CPC_SETTINGS
 #define MACHINE_STATE_TEST_DONE           -19
+#else
+#define MACHINE_STATE_TEST_DONE           -16
+#endif
 
 unsigned long GetLastSelfTestChangedTime();
 void SetLastSelfTestChangedTime(unsigned long setSelfTestChange);
 int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long CurrentTime, byte resetSwitch, byte slamSwitch=0xFF);
 
 unsigned long GetAwardScore(byte level);
+
+#ifdef ENABLE_CPC_SETTINGS
 byte GetCPCSelection(byte chuteNumber);
 byte GetCPCCoins(byte cpcSelection);
 byte GetCPCCredits(byte cpcSelection);
+#endif 
 
 #endif

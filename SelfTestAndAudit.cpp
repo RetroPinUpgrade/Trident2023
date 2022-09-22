@@ -38,7 +38,7 @@ byte CurSound = 0x01;
 byte SoundPlaying = 0;
 boolean SolenoidCycle = true;
 
-
+#ifdef ENABLE_CPC_SETTINGS
 boolean CPCSelectionsHaveBeenRead = false;
 #define NUM_CPC_PAIRS 9
 byte CPCPairs[NUM_CPC_PAIRS][2] = {
@@ -53,7 +53,6 @@ byte CPCPairs[NUM_CPC_PAIRS][2] = {
   {4, 1}
 };
 byte CPCSelection[3];
-
 
 byte GetCPCSelection(byte chuteNumber) {
   if (chuteNumber>2) return 0xFF;
@@ -92,7 +91,7 @@ byte GetCPCCredits(byte cpcSelection) {
   return CPCPairs[cpcSelection][1];
 }
 
-
+#endif
 
 
 int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long CurrentTime, byte resetSwitch, byte slamSwitch) {
@@ -101,7 +100,10 @@ int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long Current
   boolean resetDoubleClick = false;
   unsigned short savedScoreStartByte = 0;
   unsigned short auditNumStartByte = 0;
+
+#ifdef ENABLE_CPC_SETTINGS
   unsigned short cpcSelectorStartByte = 0;
+#endif
 
   if (curSwitch==resetSwitch) {
     ResetHold = CurrentTime;
@@ -307,14 +309,17 @@ int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long Current
   } else if (curState==MACHINE_STATE_TEST_CHUTE_1_COINS) {
     auditNumStartByte = BSOS_CHUTE_1_COINS_START_BYTE;
   } else if (curState==MACHINE_STATE_TEST_CHUTE_3_COINS) {
-    auditNumStartByte = BSOS_CHUTE_3_COINS_START_BYTE;
-  } else if (curState==MACHINE_STATE_ADJUST_CPC_CHUTE_1) {
+    auditNumStartByte = BSOS_CHUTE_3_COINS_START_BYTE;    
+  } 
+#ifdef ENABLE_CPC_SETTINGS  
+    else if (curState==MACHINE_STATE_ADJUST_CPC_CHUTE_1) {
     cpcSelectorStartByte = BSOS_CPC_CHUTE_1_SELECTION_BYTE;
   } else if (curState==MACHINE_STATE_ADJUST_CPC_CHUTE_2) {
     cpcSelectorStartByte = BSOS_CPC_CHUTE_2_SELECTION_BYTE;
   } else if (curState==MACHINE_STATE_ADJUST_CPC_CHUTE_3) {
     cpcSelectorStartByte = BSOS_CPC_CHUTE_3_SELECTION_BYTE;
   }
+#endif  
 
   if (savedScoreStartByte) {
     if (curStateChanged) {
@@ -363,6 +368,7 @@ int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long Current
     
   }
 
+#ifdef ENABLE_CPC_SETTINGS
   if (cpcSelectorStartByte) {
     if (curStateChanged) {
       SavedValue = BSOS_ReadByteFromEEProm(cpcSelectorStartByte);
@@ -375,7 +381,7 @@ int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long Current
       byte lastValue = (byte)SavedValue;
 //      if (BSOS_GetUpDownSwitchState()) { 
         SavedValue += 1;
-        if (SavedValue>=NUM_CPC_PAIRS) SavedValue = (NUM_CPC_PAIRS-1);
+        if (SavedValue>=NUM_CPC_PAIRS) SavedValue = 0;
 //      } else {
 //        if (SavedValue>0) SavedValue -= 1;
 //      }
@@ -389,6 +395,7 @@ int RunBaseSelfTest(int curState, boolean curStateChanged, unsigned long Current
       }
     }
   }
+#endif
   
   return returnState;
 }

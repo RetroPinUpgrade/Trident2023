@@ -2,7 +2,7 @@
  * Class - AudioHandler
  * 
    * This class wraps the different audio output options for 
-   * pinball machines (WAV Trigger, SB-100, SB-300, Squawk & Talk
+   * pinball machines (WAV Trigger, SB-100, SB-300, S&T
    * -51, etc.) to provide different output options. Additionally,
    * it adds a bunch of audio management features:
    * 
@@ -46,33 +46,192 @@
 #include <Arduino.h>
 #include "AudioHandler.h"
 
-void SendOnlyWavTrigger::start(void) {
-//  uint8_t txbuf[5];
-	WTSerial.begin(57600);
+
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+// **************************************************************
+void wavTrigger::start(void) {
+
+uint8_t txbuf[5];
+
+  versionRcvd = false;
+  sysinfoRcvd = false;
+  WTSerial.begin(57600);
+  flush();
+
+  // Request version string
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_GET_VERSION;
+  txbuf[4] = EOM;
+  WTSerial.write(txbuf, 5);
+
+  // Request system info
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_GET_SYS_INFO;
+  txbuf[4] = EOM;
+  WTSerial.write(txbuf, 5);
+}
+
+// **************************************************************
+void wavTrigger::flush(void) {
+
+int i;
+//uint8_t dat;
+
+  rxCount = 0;
+  rxLen = 0;
+  rxMsgReady = false;
+  for (i = 0; i < MAX_NUM_VOICES; i++) {
+    voiceTable[i] = 0xffff;
+  }
+  while(WTSerial.available())
+    /*dat = */WTSerial.read();
 }
 
 
 // **************************************************************
-/*
-void SendOnlyWavTrigger::masterGain(int gain) {
+void wavTrigger::update(void) {
+
+int i;
+uint8_t dat;
+uint8_t voice;
+uint16_t track;
+
+  rxMsgReady = false;
+  while (WTSerial.available() > 0) {
+    dat = WTSerial.read();
+    if ((rxCount == 0) && (dat == SOM1)) {
+      rxCount++;
+    }
+    else if (rxCount == 1) {
+      if (dat == SOM2)
+        rxCount++;
+      else {
+        rxCount = 0;
+        //Serial.print("Bad msg 1\n");
+      }
+    }
+    else if (rxCount == 2) {
+      if (dat <= MAX_MESSAGE_LEN) {
+        rxCount++;
+        rxLen = dat - 1;
+      }
+      else {
+        rxCount = 0;
+        //Serial.print("Bad msg 2\n");
+      }
+    }
+    else if ((rxCount > 2) && (rxCount < rxLen)) {
+      rxMessage[rxCount - 3] = dat;
+      rxCount++;
+    }
+    else if (rxCount == rxLen) {
+      if (dat == EOM)
+        rxMsgReady = true;
+      else {
+        rxCount = 0;
+        //Serial.print("Bad msg 3\n");
+      }
+    }
+    else {
+      rxCount = 0;
+      //Serial.print("Bad msg 4\n");
+    }
+
+    if (rxMsgReady) {
+      switch (rxMessage[0]) {
+
+        case RSP_TRACK_REPORT:
+          track = rxMessage[2];
+          track = (track << 8) + rxMessage[1] + 1;
+          voice = rxMessage[3];
+          if (voice < MAX_NUM_VOICES) {
+            if (rxMessage[4] == 0) {
+              if (track == voiceTable[voice])
+                voiceTable[voice] = 0xffff;
+            }
+            else
+              voiceTable[voice] = track;
+          }
+          // ==========================
+          //Serial.print("Track ");
+          //Serial.print(track);
+          //if (rxMessage[4] == 0)
+          //  Serial.print(" off\n");
+          //else
+          //  Serial.print(" on\n");
+          // ==========================
+        break;
+
+        case RSP_VERSION_STRING:
+          for (i = 0; i < (VERSION_STRING_LEN - 1); i++)
+            version[i] = rxMessage[i + 1];
+          version[VERSION_STRING_LEN - 1] = 0;
+          versionRcvd = true;
+          // ==========================
+          //Serial.write(version);
+          //Serial.write("\n");
+          // ==========================
+        break;
+
+        case RSP_SYSTEM_INFO:
+          numVoices = rxMessage[1];
+          numTracks = rxMessage[3];
+          numTracks = (numTracks << 8) + rxMessage[2];
+          sysinfoRcvd = true;
+          // ==========================
+          ///\Serial.print("Sys info received\n");
+          // ==========================
+        break;
+
+      }
+      rxCount = 0;
+      rxLen = 0;
+      rxMsgReady = false;
+
+    } // if (rxMsgReady)
+
+  } // while (WTSerial.available() > 0)
+  
+}
+
+// **************************************************************
+bool wavTrigger::isTrackPlaying(int trk) {
+
+int i;
+bool fResult = false;
+
+  update();
+  for (i = 0; i < MAX_NUM_VOICES; i++) {
+    if (voiceTable[i] == ((uint16_t)trk))
+      fResult = true;
+  }
+  
+  return fResult;
+}
+
+// **************************************************************
+void wavTrigger::masterGain(int gain) {
 
 uint8_t txbuf[7];
 unsigned short vol;
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x07;
-	txbuf[3] = CMD_MASTER_VOLUME;
-	vol = (unsigned short)gain;
-	txbuf[4] = (uint8_t)vol;
-	txbuf[5] = (uint8_t)(vol >> 8);
-	txbuf[6] = EOM;
-	WTSerial.write(txbuf, 7);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_MASTER_VOLUME;
+  vol = (unsigned short)gain;
+  txbuf[4] = (uint8_t)vol;
+  txbuf[5] = (uint8_t)(vol >> 8);
+  txbuf[6] = EOM;
+  WTSerial.write(txbuf, 7);
 }
-*/
+
 // **************************************************************
-/*
-void SendOnlyWavTrigger::setAmpPwr(bool enable) {
+void wavTrigger::setAmpPwr(bool enable) {
 
 uint8_t txbuf[6];
 
@@ -84,207 +243,241 @@ uint8_t txbuf[6];
     txbuf[5] = EOM;
     WTSerial.write(txbuf, 6);
 }
-*/
 
 // **************************************************************
-/*
-void SendOnlyWavTrigger::setReporting(bool enable) {
+void wavTrigger::setReporting(bool enable) {
 
 uint8_t txbuf[6];
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x06;
-	txbuf[3] = CMD_SET_REPORTING;
-	txbuf[4] = enable;
-	txbuf[5] = EOM;
-	WTSerial.write(txbuf, 6);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x06;
+  txbuf[3] = CMD_SET_REPORTING;
+  txbuf[4] = enable;
+  txbuf[5] = EOM;
+  WTSerial.write(txbuf, 6);
 }
-*/
 
 // **************************************************************
-void SendOnlyWavTrigger::trackPlaySolo(int trk) {
+bool wavTrigger::getVersion(char *pDst, int len) {
+
+int i;
+
+  update();
+  if (!versionRcvd) {
+    return false;
+  }
+  for (i = 0; i < (VERSION_STRING_LEN - 1); i++) {
+    if (i >= (len - 1))
+      break;
+    pDst[i] = version[i];
+  }
+  pDst[++i] = 0;
+  return true;
+}
+
+// **************************************************************
+int wavTrigger::getNumTracks(void) {
+
+  update();
+  return numTracks;
+}
+
+// **************************************************************
+void wavTrigger::trackPlaySolo(int trk) {
   
-	trackControl(trk, TRK_PLAY_SOLO);
+  trackControl(trk, TRK_PLAY_SOLO);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackPlaySolo(int trk, bool lock) {
+void wavTrigger::trackPlaySolo(int trk, bool lock) {
   
-	trackControl(trk, TRK_PLAY_SOLO, lock);
+  trackControl(trk, TRK_PLAY_SOLO, lock);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackPlayPoly(int trk) {
+void wavTrigger::trackPlayPoly(int trk) {
   
-	trackControl(trk, TRK_PLAY_POLY);
+  trackControl(trk, TRK_PLAY_POLY);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackPlayPoly(int trk, bool lock) {
+void wavTrigger::trackPlayPoly(int trk, bool lock) {
   
-	trackControl(trk, TRK_PLAY_POLY, lock);
+  trackControl(trk, TRK_PLAY_POLY, lock);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackLoad(int trk) {
+void wavTrigger::trackLoad(int trk) {
   
-	trackControl(trk, TRK_LOAD);
+  trackControl(trk, TRK_LOAD);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackLoad(int trk, bool lock) {
+void wavTrigger::trackLoad(int trk, bool lock) {
   
-	trackControl(trk, TRK_LOAD, lock);
+  trackControl(trk, TRK_LOAD, lock);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackStop(int trk) {
+void wavTrigger::trackStop(int trk) {
 
-	trackControl(trk, TRK_STOP);
+  trackControl(trk, TRK_STOP);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackPause(int trk) {
+void wavTrigger::trackPause(int trk) {
 
-	trackControl(trk, TRK_PAUSE);
+  trackControl(trk, TRK_PAUSE);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackResume(int trk) {
+void wavTrigger::trackResume(int trk) {
 
-	trackControl(trk, TRK_RESUME);
+  trackControl(trk, TRK_RESUME);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackLoop(int trk, bool enable) {
+void wavTrigger::trackLoop(int trk, bool enable) {
  
-	if (enable)
-		trackControl(trk, TRK_LOOP_ON);
-	else
-		trackControl(trk, TRK_LOOP_OFF);
+  if (enable)
+    trackControl(trk, TRK_LOOP_ON);
+  else
+    trackControl(trk, TRK_LOOP_OFF);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackControl(int trk, int code) {
+void wavTrigger::trackControl(int trk, int code) {
   
 uint8_t txbuf[8];
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x08;
-	txbuf[3] = CMD_TRACK_CONTROL;
-	txbuf[4] = (uint8_t)code;
-	txbuf[5] = (uint8_t)trk;
-	txbuf[6] = (uint8_t)(trk >> 8);
-	txbuf[7] = EOM;
-	WTSerial.write(txbuf, 8);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x08;
+  txbuf[3] = CMD_TRACK_CONTROL;
+  txbuf[4] = (uint8_t)code;
+  txbuf[5] = (uint8_t)trk;
+  txbuf[6] = (uint8_t)(trk >> 8);
+  txbuf[7] = EOM;
+  WTSerial.write(txbuf, 8);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackControl(int trk, int code, bool lock) {
+void wavTrigger::trackControl(int trk, int code, bool lock) {
   
 uint8_t txbuf[9];
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x09;
-	txbuf[3] = CMD_TRACK_CONTROL_EX;
-	txbuf[4] = (uint8_t)code;
-	txbuf[5] = (uint8_t)trk;
-	txbuf[6] = (uint8_t)(trk >> 8);
-	txbuf[7] = lock;
-	txbuf[8] = EOM;
-	WTSerial.write(txbuf, 9);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x09;
+  txbuf[3] = CMD_TRACK_CONTROL_EX;
+  txbuf[4] = (uint8_t)code;
+  txbuf[5] = (uint8_t)trk;
+  txbuf[6] = (uint8_t)(trk >> 8);
+  txbuf[7] = lock;
+  txbuf[8] = EOM;
+  WTSerial.write(txbuf, 9);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::stopAllTracks(void) {
+void wavTrigger::stopAllTracks(void) {
 
 uint8_t txbuf[5];
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x05;
-	txbuf[3] = CMD_STOP_ALL;
-	txbuf[4] = EOM;
-	WTSerial.write(txbuf, 5);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_STOP_ALL;
+  txbuf[4] = EOM;
+  WTSerial.write(txbuf, 5);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::resumeAllInSync(void) {
+void wavTrigger::resumeAllInSync(void) {
 
 uint8_t txbuf[5];
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x05;
-	txbuf[3] = CMD_RESUME_ALL_SYNC;
-	txbuf[4] = EOM;
-	WTSerial.write(txbuf, 5);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_RESUME_ALL_SYNC;
+  txbuf[4] = EOM;
+  WTSerial.write(txbuf, 5);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackGain(int trk, int gain) {
+void wavTrigger::trackGain(int trk, int gain) {
 
 uint8_t txbuf[9];
 unsigned short vol;
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x09;
-	txbuf[3] = CMD_TRACK_VOLUME;
-	txbuf[4] = (uint8_t)trk;
-	txbuf[5] = (uint8_t)(trk >> 8);
-	vol = (unsigned short)gain;
-	txbuf[6] = (uint8_t)vol;
-	txbuf[7] = (uint8_t)(vol >> 8);
-	txbuf[8] = EOM;
-	WTSerial.write(txbuf, 9);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x09;
+  txbuf[3] = CMD_TRACK_VOLUME;
+  txbuf[4] = (uint8_t)trk;
+  txbuf[5] = (uint8_t)(trk >> 8);
+  vol = (unsigned short)gain;
+  txbuf[6] = (uint8_t)vol;
+  txbuf[7] = (uint8_t)(vol >> 8);
+  txbuf[8] = EOM;
+  WTSerial.write(txbuf, 9);
 }
 
 // **************************************************************
-void SendOnlyWavTrigger::trackFade(int trk, int gain, int time, bool stopFlag) {
+void wavTrigger::trackFade(int trk, int gain, int time, bool stopFlag) {
 
 uint8_t txbuf[12];
 unsigned short vol;
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x0c;
-	txbuf[3] = CMD_TRACK_FADE;
-	txbuf[4] = (uint8_t)trk;
-	txbuf[5] = (uint8_t)(trk >> 8);
-	vol = (unsigned short)gain;
-	txbuf[6] = (uint8_t)vol;
-	txbuf[7] = (uint8_t)(vol >> 8);
-	txbuf[8] = (uint8_t)time;
-	txbuf[9] = (uint8_t)(time >> 8);
-	txbuf[10] = stopFlag;
-	txbuf[11] = EOM;
-	WTSerial.write(txbuf, 12);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x0c;
+  txbuf[3] = CMD_TRACK_FADE;
+  txbuf[4] = (uint8_t)trk;
+  txbuf[5] = (uint8_t)(trk >> 8);
+  vol = (unsigned short)gain;
+  txbuf[6] = (uint8_t)vol;
+  txbuf[7] = (uint8_t)(vol >> 8);
+  txbuf[8] = (uint8_t)time;
+  txbuf[9] = (uint8_t)(time >> 8);
+  txbuf[10] = stopFlag;
+  txbuf[11] = EOM;
+  WTSerial.write(txbuf, 12);
 }
 
 // **************************************************************
-/*
-void SendOnlyWavTrigger::samplerateOffset(int offset) {
+void wavTrigger::samplerateOffset(int offset) {
 
 uint8_t txbuf[7];
 unsigned short off;
 
-	txbuf[0] = SOM1;
-	txbuf[1] = SOM2;
-	txbuf[2] = 0x07;
-	txbuf[3] = CMD_SAMPLERATE_OFFSET;
-	off = (unsigned short)offset;
-	txbuf[4] = (uint8_t)off;
-	txbuf[5] = (uint8_t)(off >> 8);
-	txbuf[6] = EOM;
-	WTSerial.write(txbuf, 7);
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_SAMPLERATE_OFFSET;
+  off = (unsigned short)offset;
+  txbuf[4] = (uint8_t)off;
+  txbuf[5] = (uint8_t)(off >> 8);
+  txbuf[6] = EOM;
+  WTSerial.write(txbuf, 7);
 }
-*/
 
+// **************************************************************
+void wavTrigger::setTriggerBank(int bank) {
 
+uint8_t txbuf[6];
+
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x06;
+  txbuf[3] = CMD_SET_TRIGGER_BANK;
+  txbuf[4] = (uint8_t)bank;
+  txbuf[5] = EOM;
+  WTSerial.write(txbuf, 6);
+}
+
+#endif
 
 
 
@@ -296,20 +489,22 @@ AudioHandler::AudioHandler() {
   musicGain = 0;
   ClearSoundQueue();
   ClearSoundCardQueue();
+  ClearNotificationStack();
   currentBackgroundTrack = BACKGROUND_TRACK_NONE;
   soundtrackRandomOrder = true;
   nextSoundtrackPlayTime = 0;
   backgroundSongEndTime = 0;
+  nextVoiceNotificationPlayTime = 0;
   
   voiceNotificationStackFirst = 0;
   voiceNotificationStackLast = 0;
   currentNotificationPriority = 0;
-  currentNotificationPlaying = 0;
+  currentNotificationPlaying = INVALID_SOUND_INDEX;
   ducking = 20;
 
   for (int count=0; count<NUMBER_OF_SONGS_REMEMBERED; count++) lastSongsPlayed[count] = BACKGROUND_TRACK_NONE;
 
-
+  InitSoundEffectQueue();
 }
 
 AudioHandler::~AudioHandler() {
@@ -319,18 +514,24 @@ AudioHandler::~AudioHandler() {
 boolean AudioHandler::InitDevices(byte audioType) {
 
 
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   if (audioType & AUDIO_PLAY_TYPE_WAV_TRIGGER) {
     // WAV Trigger startup at 57600
     wTrig.start();
+    delay(10);
     wTrig.stopAllTracks();
+    wTrig.samplerateOffset(0);
+    wTrig.setReporting(true);
   }
 #endif
 
   if (audioType & AUDIO_PLAY_TYPE_ORIGINAL_SOUNDS) {
-#ifdef BALLY_STERN_OS_USE_SB300
+#ifdef RPU_OS_USE_SB300
     InitSB300Registers();
     PlaySB300StartupBeep();
+#endif
+
+#if defined(RPU_OS_USE_WTYPE_1_SOUND) || defined(RPU_OS_USE_WTYPE_2_SOUND)
 #endif
   }
 
@@ -351,11 +552,11 @@ void AudioHandler::SetSoundFXVolume(byte s_volume) {
 }
 
 void AudioHandler::SetNotificationsVolume(byte s_volume) {
-  notificationsGain = ConvertVolumeSettingToGain(s_volume);;
+  notificationsGain = ConvertVolumeSettingToGain(s_volume);
 }
 
 void AudioHandler::SetMusicVolume(byte s_volume) {
-  musicGain = ConvertVolumeSettingToGain(s_volume);;
+  musicGain = ConvertVolumeSettingToGain(s_volume);
 }
 
 void AudioHandler::SetMusicDuckingGain(byte s_ducking) {
@@ -365,14 +566,16 @@ void AudioHandler::SetMusicDuckingGain(byte s_ducking) {
 
 
 boolean AudioHandler::StopSound(unsigned short soundIndex) {
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   wTrig.trackStop(soundIndex);
+#else
+  (void)soundIndex;
 #endif
   return false;
 }
 
 boolean AudioHandler::StopAllMusic() {
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   if (currentBackgroundTrack!=BACKGROUND_TRACK_NONE) {
     wTrig.trackStop(currentBackgroundTrack);
     currentBackgroundTrack = BACKGROUND_TRACK_NONE;
@@ -385,25 +588,44 @@ boolean AudioHandler::StopAllMusic() {
 }
 
 
-void AudioHandler::ClearNotificationStack() {
-  voiceNotificationStackFirst = 0;
-  voiceNotificationStackLast = 0;
+void AudioHandler::ClearNotificationStack(byte priority) {
+  if (priority==10) {
+    voiceNotificationStackFirst = 0;
+    voiceNotificationStackLast = 0;
+    for (byte count=0; count<VOICE_NOTIFICATION_STACK_SIZE; count++) {
+      voiceNotificationNumStack[count] = VOICE_NOTIFICATION_STACK_EMPTY;
+      voiceNotificationDuration[count] = 0;
+      voiceNotificationPriorityStack[count] = 0;
+
+    }
+  } else {
+    byte tempFirst = voiceNotificationStackFirst;
+    byte tempLast = voiceNotificationStackLast;
+    while (tempFirst != tempLast) {
+      if (voiceNotificationPriorityStack[tempFirst]<=priority) {
+        voiceNotificationNumStack[tempFirst] = INVALID_SOUND_INDEX;
+      }
+      tempFirst += 1;
+      if (tempFirst >= VOICE_NOTIFICATION_STACK_SIZE) tempFirst = 0;
+    }    
+  }
 }
 
 
-boolean AudioHandler::StopCurrentNotification() {
+boolean AudioHandler::StopCurrentNotification(byte priority) {
   nextVoiceNotificationPlayTime = 0;
 
-  if (currentNotificationPlaying!=0) {
+  if (currentNotificationPlaying!=INVALID_SOUND_INDEX && currentNotificationPriority<=priority) {
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
     wTrig.trackStop(currentNotificationPlaying);
-    currentNotificationPlaying = 0;
+#endif
+//    currentNotificationPlaying = INVALID_SOUND_INDEX;
+    nextVoiceNotificationPlayTime = 1;
     currentNotificationPriority = 0;
     return true;
   }
   return false;
 }
-
-
 
 
 int AudioHandler::SpaceLeftOnNotificationStack() {
@@ -422,7 +644,7 @@ void AudioHandler::PushToNotificationStack(unsigned int notification, unsigned i
   voiceNotificationPriorityStack[voiceNotificationStackLast] = priority;
 
   voiceNotificationStackLast += 1;
-  if (voiceNotificationStackLast == VOICE_NOTIFICATION_STACK_SIZE) {
+  if (voiceNotificationStackLast >= VOICE_NOTIFICATION_STACK_SIZE) {
     // If the end index is off the end, then wrap
     voiceNotificationStackLast = 0;
   }
@@ -449,63 +671,104 @@ byte AudioHandler::GetTopNotificationPriority() {
 
 
 
-boolean AudioHandler::QueueNotification(unsigned short notificationIndex, unsigned short notificationLength, byte priority, unsigned long currentTime) {
-#if defined (USE_WAV_TRIGGER) || defined (USE_WAV_TRIGGER_1p3)
+boolean AudioHandler::QueuePrioritizedNotification(unsigned short notificationIndex, unsigned short notificationLength, byte priority, unsigned long currentTime) {
+#if defined (RPU_OS_USE_WAV_TRIGGER) || defined (RPU_OS_USE_WAV_TRIGGER_1p3)
   // if everything on the queue has a lower priority, kill all those
   byte topQueuePriority = GetTopNotificationPriority();
   if (priority>topQueuePriority) {
     ClearNotificationStack();  
   }
-  if (priority>currentNotificationPriority) {
-    StopCurrentNotification();
-  }
 
   // If there's nothing playing, we can play it now
-  if (nextVoiceNotificationPlayTime == 0) {
+  if (currentNotificationPlaying == INVALID_SOUND_INDEX) {
     if (currentBackgroundTrack != BACKGROUND_TRACK_NONE) {
       wTrig.trackFade(currentBackgroundTrack, musicGain - ducking, 500, 0);
     }
-    nextVoiceNotificationPlayTime = currentTime + (unsigned long)(notificationLength) * 1000;
-    
+    if (notificationLength) nextVoiceNotificationPlayTime = currentTime + (unsigned long)(notificationLength);
+    else nextVoiceNotificationPlayTime = 0;
+
     wTrig.trackPlayPoly(notificationIndex);
     wTrig.trackGain(notificationIndex, notificationsGain);
+    currentNotificationStartTime = currentTime;
     
     currentNotificationPlaying = notificationIndex;
     currentNotificationPriority = priority;
   } else {
     PushToNotificationStack(notificationIndex, notificationLength, priority);
   }
+#else
+  // Phony stuff to get rid of warnings
+  (void)notificationIndex;
+  (void)notificationLength;
+  (void)priority;
+  (void)currentTime;
 #endif
 
   return true;
 }
 
+void AudioHandler::OutputTracksPlaying() {
+#if defined (RPU_OS_USE_WAV_TRIGGER) || defined (RPU_OS_USE_WAV_TRIGGER_1p3)
+  int i;
+  char buf[256];
+  sprintf(buf, "nothing");
+  Serial.write("Looking for playing tracks\n");
+  wTrig.getVersion(buf, 256);
+  Serial.write("Version: ");
+  Serial.write(buf);
+  Serial.write("\n");
+  for (i=0; i<1000; i++) {
+  
+    if (wTrig.isTrackPlaying(i)) {
+      sprintf(buf, "Track %d playing\n", i);
+      Serial.write(buf);
+    }
+  }
+#endif
+}
 
-void AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
-#if defined (USE_WAV_TRIGGER) || defined (USE_WAV_TRIGGER_1p3)
-  if (nextVoiceNotificationPlayTime != 0 && currentTime > nextVoiceNotificationPlayTime) {
 
+boolean AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
+  boolean queueStillHasEntries = true;
+#if defined (RPU_OS_USE_WAV_TRIGGER) || defined (RPU_OS_USE_WAV_TRIGGER_1p3)
+  boolean playNextNotification = false;
+
+  if (nextVoiceNotificationPlayTime != 0) { 
+    if (currentTime > nextVoiceNotificationPlayTime) {
+      playNextNotification = true;
+    }
+  } else {
+    if (currentNotificationPlaying!=INVALID_SOUND_INDEX && !wTrig.isTrackPlaying(currentNotificationPlaying)) { 
+      if (currentTime>(currentNotificationStartTime+100)) playNextNotification = true;
+    }
+  }
+  
+  if (playNextNotification) {
     byte nextPriority = 0;
     unsigned int nextNotification = VOICE_NOTIFICATION_STACK_EMPTY;
     unsigned int nextDuration = 0;
-    
+
     // Current notification done, see if there's another
-    if (voiceNotificationStackFirst != voiceNotificationStackLast) {
-      nextPriority = voiceNotificationPriorityStack[voiceNotificationStackFirst];;
+    if (voiceNotificationStackLast>=VOICE_NOTIFICATION_STACK_SIZE) voiceNotificationStackLast = (VOICE_NOTIFICATION_STACK_SIZE-1);
+    while (voiceNotificationStackFirst != voiceNotificationStackLast) {
+      nextPriority = voiceNotificationPriorityStack[voiceNotificationStackFirst];
       nextNotification = voiceNotificationNumStack[voiceNotificationStackFirst];
-      nextDuration = voiceNotificationDuration[voiceNotificationStackFirst];;
+      nextDuration = voiceNotificationDuration[voiceNotificationStackFirst];
 
       voiceNotificationStackFirst += 1;
-      if (voiceNotificationStackFirst >= VOICE_NOTIFICATION_STACK_SIZE) voiceNotificationStackFirst = 0;    
+      if (voiceNotificationStackFirst >= VOICE_NOTIFICATION_STACK_SIZE) voiceNotificationStackFirst = 0;
+      if (nextNotification!=INVALID_SOUND_INDEX) break;
     }
-        
+
     if (nextNotification != VOICE_NOTIFICATION_STACK_EMPTY) {
       if (currentBackgroundTrack != BACKGROUND_TRACK_NONE) {
         wTrig.trackFade(currentBackgroundTrack, musicGain - ducking, 500, 0);
       }
-      nextVoiceNotificationPlayTime = currentTime + (unsigned long)(nextDuration) * 1000;
+      if (nextDuration!=0) nextVoiceNotificationPlayTime = currentTime + (unsigned long)(nextDuration);
+      else nextVoiceNotificationPlayTime = 0;
       wTrig.trackPlayPoly(nextNotification);
       wTrig.trackGain(nextNotification, notificationsGain);
+      currentNotificationStartTime = currentTime;
       currentNotificationPlaying = nextNotification;
       currentNotificationPriority = nextPriority;
     } else {
@@ -514,22 +777,28 @@ void AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
         wTrig.trackFade(currentBackgroundTrack, musicGain, 1500, 0);
       }
       nextVoiceNotificationPlayTime = 0;
-      currentNotificationPlaying = 0;
+      currentNotificationPlaying = INVALID_SOUND_INDEX;
       currentNotificationPriority = 0;
+      queueStillHasEntries = false;
     }
-  }
+    
+  } 
+#else
+  (void)currentTime;
 #endif
+
+  return queueStillHasEntries;
 }
 
 
 
-boolean AudioHandler::StopAllNotifications() {
-  ClearNotificationStack();
-  return StopCurrentNotification();
+boolean AudioHandler::StopAllNotifications(byte priority) {
+  ClearNotificationStack(priority);
+  return StopCurrentNotification(priority);
 }
 
 boolean AudioHandler::StopAllSoundFX() {
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   wTrig.stopAllTracks();
 #endif
   ClearSoundCardQueue();
@@ -547,30 +816,30 @@ boolean AudioHandler::StopAllAudio() {
 }
 
 void AudioHandler::InitSB300Registers() {
-#ifdef BALLY_STERN_OS_USE_SB300
-  BSOS_PlaySB300SquareWave(1, 0x00); // Write 0x00 to CR2 (Timer 2 off, continuous mode, 16-bit, C2 clock, CR3 set)
-  BSOS_PlaySB300SquareWave(0, 0x00); // Write 0x00 to CR3 (Timer 3 off, continuous mode, 16-bit, C3 clock, not prescaled)
-  BSOS_PlaySB300SquareWave(1, 0x01); // Write 0x00 to CR2 (Timer 2 off, continuous mode, 16-bit, C2 clock, CR1 set)
-  BSOS_PlaySB300SquareWave(0, 0x00); // Write 0x00 to CR1 (Timer 1 off, continuous mode, 16-bit, C1 clock, timers allowed)
+#ifdef RPU_OS_USE_SB300
+  RPU_PlaySB300SquareWave(1, 0x00); // Write 0x00 to CR2 (Timer 2 off, continuous mode, 16-bit, C2 clock, CR3 set)
+  RPU_PlaySB300SquareWave(0, 0x00); // Write 0x00 to CR3 (Timer 3 off, continuous mode, 16-bit, C3 clock, not prescaled)
+  RPU_PlaySB300SquareWave(1, 0x01); // Write 0x00 to CR2 (Timer 2 off, continuous mode, 16-bit, C2 clock, CR1 set)
+  RPU_PlaySB300SquareWave(0, 0x00); // Write 0x00 to CR1 (Timer 1 off, continuous mode, 16-bit, C1 clock, timers allowed)
 #endif
 }
 
 
 void AudioHandler::PlaySB300StartupBeep() {
-#ifdef BALLY_STERN_OS_USE_SB300
-  BSOS_PlaySB300SquareWave(1, 0x92); // Write 0x92 to CR2 (Timer 2 on, continuous mode, 16-bit, E clock, CR3 set)
-  BSOS_PlaySB300SquareWave(0, 0x92); // Write 0x92 to CR3 (Timer 3 on, continuous mode, 16-bit, E clock, not prescaled)
-  BSOS_PlaySB300SquareWave(4, 0x02); // Set Timer 2 to 0x0200
-  BSOS_PlaySB300SquareWave(5, 0x00); 
-  BSOS_PlaySB300SquareWave(6, 0x80); // Set Timer 3 to 0x8000
-  BSOS_PlaySB300SquareWave(7, 0x00);
-  BSOS_PlaySB300Analog(0, 0x02);
+#ifdef RPU_OS_USE_SB300
+  RPU_PlaySB300SquareWave(1, 0x92); // Write 0x92 to CR2 (Timer 2 on, continuous mode, 16-bit, E clock, CR3 set)
+  RPU_PlaySB300SquareWave(0, 0x92); // Write 0x92 to CR3 (Timer 3 on, continuous mode, 16-bit, E clock, not prescaled)
+  RPU_PlaySB300SquareWave(4, 0x02); // Set Timer 2 to 0x0200
+  RPU_PlaySB300SquareWave(5, 0x00); 
+  RPU_PlaySB300SquareWave(6, 0x80); // Set Timer 3 to 0x8000
+  RPU_PlaySB300SquareWave(7, 0x00);
+  RPU_PlaySB300Analog(0, 0x02);
 #endif
 }
 
 
 void AudioHandler::ClearSoundCardQueue() {
-#ifdef BALLY_STERN_OS_USE_SB300
+#ifdef RPU_OS_USE_SB300
   for (int count=0; count<SOUND_CARD_QUEUE_SIZE; count++) {
     soundCardQueue[count].playTime = 0;
   }
@@ -592,34 +861,36 @@ boolean AudioHandler::PlaySound(unsigned short soundIndex, byte audioType, byte 
   if (overrideVolume!=0xFF) gain = ConvertVolumeSettingToGain(overrideVolume);
 
   if (audioType==AUDIO_PLAY_TYPE_CHIMES) {
-#if (BALLY_STERN_OS_HARDWARE_REV==2) && defined(BALLY_STERN_OS_USE_SB100)
-    BSOS_PlaySB100Chime((byte)soundIndex);
+#if defined(RPU_OS_USE_SB100)
+//    RPU_PlaySB100Chime((byte)soundIndex);
     soundPlayed = true;
-#endif     
+#endif
   } else if (audioType==AUDIO_PLAY_TYPE_ORIGINAL_SOUNDS) {
-#ifdef BALLY_STERN_OS_USE_DASH51
-    BSOS_PlaySoundDash51((byte)soundIndex);
+#ifdef RPU_OS_USE_DASH51
+    RPU_PlaySoundDash51((byte)soundIndex);
     soundPlayed = true;
 #endif
-#ifdef BALLY_STERN_OS_USE_SQUAWK_AND_TALK
-    BSOS_PlaySoundSquawkAndTalk((byte)soundIndex);
+#ifdef RPU_OS_USE_S_AND_T
+    RPU_PlaySoundSAndT((byte)soundIndex);
     soundPlayed = true;
 #endif
-#ifdef BALLY_STERN_OS_USE_SB100
-    BSOS_PlaySB100((byte)soundIndex);
+#ifdef RPU_OS_USE_SB100
+    RPU_PlaySB100((byte)soundIndex);
     soundPlayed = true;
-#endif       
+#endif
   } else if (audioType==AUDIO_PLAY_TYPE_WAV_TRIGGER) {
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
-#ifdef USE_WAV_TRIGGER
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+#ifdef RPU_OS_USE_WAV_TRIGGER
     wTrig.trackStop(soundIndex);
 #endif
 
     wTrig.trackPlayPoly(soundIndex);
     wTrig.trackGain(soundIndex, gain);
     soundPlayed = true;
-#endif    
+#endif
   }
+  (void)gain;
+  (void)soundIndex;
 
   return soundPlayed;  
 }
@@ -627,10 +898,14 @@ boolean AudioHandler::PlaySound(unsigned short soundIndex, byte audioType, byte 
 
 boolean AudioHandler::FadeSound(unsigned short soundIndex, int fadeGain, int numMilliseconds, boolean stopTrack) {
   boolean soundFaded = false;
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   wTrig.trackFade(soundIndex, fadeGain, numMilliseconds, stopTrack);
   soundFaded = true;
-#endif  
+#endif
+  (void)soundIndex;
+  (void)fadeGain;
+  (void)numMilliseconds;
+  (void)stopTrack;
   return soundFaded;
 }
 
@@ -652,7 +927,7 @@ boolean AudioHandler::QueueSound(unsigned short soundIndex, byte audioType, unsi
 
 
 boolean AudioHandler::QueueSoundCardCommand(byte scFunction, byte scRegister, byte scData, unsigned long startTime) {
-#ifdef BALLY_STERN_OS_USE_SB300
+#ifdef RPU_OS_USE_SB300
   for (int count=0; count<SOUND_QUEUE_SIZE; count++) {
     if (soundCardQueue[count].playTime==0) {
       soundCardQueue[count].soundFunction = scFunction;
@@ -671,6 +946,52 @@ boolean AudioHandler::QueueSoundCardCommand(byte scFunction, byte scRegister, by
 }
 
 
+void AudioHandler::InitSoundEffectQueue() {
+#if defined(RPU_WTYPE_1_SOUND)
+  CurrentSoundPlaying.soundEffectNum = 0;
+  CurrentSoundPlaying.requestedPlayTime = 0;
+  CurrentSoundPlaying.playUntil = 0;
+  CurrentSoundPlaying.priority = 0;
+  CurrentSoundPlaying.inUse = false;
+
+  for (byte count = 0; count < SOUND_EFFECT_QUEUE_SIZE; count++) {
+    SoundEffectQueue[count].soundEffectNum = 0;
+    SoundEffectQueue[count].requestedPlayTime = 0;
+    SoundEffectQueue[count].playUntil = 0;
+    SoundEffectQueue[count].priority = 0;
+    SoundEffectQueue[count].inUse = false;
+  }
+#endif
+}
+
+boolean AudioHandler::PlaySoundCardWhenPossible(unsigned short soundEffectNum, unsigned long currentTime, unsigned long requestedPlayTime, unsigned long playUntil, byte priority) {
+
+#if defined(RPU_OS_USE_WTYPE_1_SOUND) || defined(RPU_OS_USE_WTYPE_2_SOUND)
+  byte count = 0;
+  for (count = 0; count < SOUND_EFFECT_QUEUE_SIZE; count++) {
+    if (SoundEffectQueue[count].inUse == false) break;
+  }
+  if (count == SOUND_EFFECT_QUEUE_SIZE) return false;
+  SoundEffectQueue[count].soundEffectNum = soundEffectNum;
+  SoundEffectQueue[count].requestedPlayTime = requestedPlayTime + currentTime;
+  SoundEffectQueue[count].playUntil = playUntil + requestedPlayTime + currentTime;
+  SoundEffectQueue[count].priority = priority;
+  SoundEffectQueue[count].inUse = true;
+#else 
+  // Phony stuff to get rid of warnings
+  (void)soundEffectNum;
+  (void)currentTime;
+  (void)requestedPlayTime;
+  (void)playUntil;
+  (void)priority;
+  return false;
+#endif
+  return true;
+}
+
+
+
+
 boolean AudioHandler::ServiceSoundQueue(unsigned long currentTime) {
   boolean soundCommandSent = false;
   for (int count=0; count<SOUND_QUEUE_SIZE; count++) {
@@ -685,14 +1006,14 @@ boolean AudioHandler::ServiceSoundQueue(unsigned long currentTime) {
 }
 
 boolean AudioHandler::ServiceSoundCardQueue(unsigned long currentTime) {
-#ifdef BALLY_STERN_OS_USE_SB300
+#ifdef RPU_OS_USE_SB300
   boolean soundCommandSent = false;
   for (int count=0; count<SOUND_CARD_QUEUE_SIZE; count++) {
     if (soundCardQueue[count].playTime!=0 && soundCardQueue[count].playTime<currentTime) {
       if (soundCardQueue[count].soundFunction==SB300_SOUND_FUNCTION_SQUARE_WAVE) {
-        BSOS_PlaySB300SquareWave(soundCardQueue[count].soundRegister, soundCardQueue[count].soundByte);   
+        RPU_PlaySB300SquareWave(soundCardQueue[count].soundRegister, soundCardQueue[count].soundByte);   
       } else if (soundCardQueue[count].soundFunction==SB300_SOUND_FUNCTION_ANALOG) {
-        BSOS_PlaySB300Analog(soundCardQueue[count].soundRegister, soundCardQueue[count].soundByte);   
+        RPU_PlaySB300Analog(soundCardQueue[count].soundRegister, soundCardQueue[count].soundByte);   
       }
       soundCardQueue[count].playTime = 0;
       soundCommandSent = true;
@@ -700,12 +1021,58 @@ boolean AudioHandler::ServiceSoundCardQueue(unsigned long currentTime) {
   }
 
   return soundCommandSent;
+#elif defined(RPU_OS_USE_WTYPE_1_SOUND) || defined(RPU_OS_USE_WTYPE_2_SOUND) 
+  byte highestPrioritySound = 0xFF;
+  byte queuePriority = 0;
+
+  for (byte count = 0; count < SOUND_EFFECT_QUEUE_SIZE; count++) {
+    // Skip sounds that aren't in use
+    if (SoundEffectQueue[count].inUse == false) continue;
+
+    // If a sound has expired, flush it
+    if (currentTime > SoundEffectQueue[count].playUntil) {
+      SoundEffectQueue[count].inUse = false;
+    } else if (currentTime > SoundEffectQueue[count].requestedPlayTime) {
+      // If this sound is ready to be played, figure out its priority
+      if (SoundEffectQueue[count].priority > queuePriority) {
+        queuePriority = SoundEffectQueue[count].priority;
+        highestPrioritySound = count;
+      } else if (SoundEffectQueue[count].priority == queuePriority) {
+        if (highestPrioritySound != 0xFF) {
+          if (SoundEffectQueue[highestPrioritySound].requestedPlayTime > SoundEffectQueue[count].requestedPlayTime) {
+            // The priorities are equal, but this sound was requested before, so switch to it
+            highestPrioritySound = count;
+          }
+        }
+      }
+    }
+  }
+
+  if (CurrentSoundPlaying.inUse && (currentTime > CurrentSoundPlaying.playUntil)) {
+    CurrentSoundPlaying.inUse = false;
+  }
+
+  boolean soundCommandSent = false;
+  if (highestPrioritySound != 0xFF) {
+    if (CurrentSoundPlaying.inUse == false || (CurrentSoundPlaying.inUse && CurrentSoundPlaying.priority < queuePriority)) {
+      // Play new sound
+      CurrentSoundPlaying.soundEffectNum = SoundEffectQueue[highestPrioritySound].soundEffectNum;
+      CurrentSoundPlaying.requestedPlayTime = SoundEffectQueue[highestPrioritySound].requestedPlayTime;
+      CurrentSoundPlaying.playUntil = SoundEffectQueue[highestPrioritySound].playUntil;
+      CurrentSoundPlaying.priority = SoundEffectQueue[highestPrioritySound].priority;
+      CurrentSoundPlaying.inUse = true;
+      SoundEffectQueue[highestPrioritySound].inUse = false;
+      RPU_PushToSoundStack(CurrentSoundPlaying.soundEffectNum, 8);
+      soundCommandSent = true;
+    }
+  }
+  return soundCommandSent;
+
 #else 
   // Phony stuff to get rid of warnings
-  unsigned long totalval = currentTime;
-  totalval += 1;
+  (void)currentTime;
   return false;
-#endif 
+#endif
 }
 
 
@@ -728,8 +1095,8 @@ boolean AudioHandler::PlayBackgroundSong(unsigned short trackIndex, boolean loop
 
   if (trackIndex!=BACKGROUND_TRACK_NONE) {
     currentBackgroundTrack = trackIndex;        
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
-#ifdef USE_WAV_TRIGGER_1p3
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+#ifdef RPU_OS_USE_WAV_TRIGGER_1p3
     wTrig.trackPlayPoly(trackIndex, true);
     trackPlayed = true;
 #else
@@ -740,9 +1107,9 @@ boolean AudioHandler::PlayBackgroundSong(unsigned short trackIndex, boolean loop
     wTrig.trackGain(trackIndex, musicGain);
 #endif
   }
-
-  return trackPlayed;
+  (void)loopTrack;
   
+  return trackPlayed;  
 }
 
 
@@ -772,14 +1139,14 @@ void AudioHandler::StartNextSoundtrackSong(unsigned long currentTime) {
   backgroundSongEndTime = (((unsigned long)curSoundtrack[retSong].TrackLength) * 1000) + currentTime;
   
   if (currentBackgroundTrack!=BACKGROUND_TRACK_NONE) {
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
     wTrig.trackFade(currentBackgroundTrack, -80, 2000, 1);
 #endif
   }
   currentBackgroundTrack = curSoundtrack[retSong].TrackIndex;
 
-#if defined(USE_WAV_TRIGGER) || defined(USE_WAV_TRIGGER_1p3)
-#ifdef USE_WAV_TRIGGER_1p3
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+#ifdef RPU_OS_USE_WAV_TRIGGER_1p3
   wTrig.trackPlayPoly(currentBackgroundTrack, true);
 #else
   wTrig.trackPlayPoly(currentBackgroundTrack);
@@ -795,16 +1162,28 @@ void AudioHandler::StartNextSoundtrackSong(unsigned long currentTime) {
 void AudioHandler::ManageBackgroundSong(unsigned long currentTime) {
   if (curSoundtrack==NULL) return; 
 
-  if (currentTime>=backgroundSongEndTime) {
-    StartNextSoundtrackSong(currentTime);
+  if (backgroundSongEndTime!=0) {
+    if (currentTime>=backgroundSongEndTime) {
+      StartNextSoundtrackSong(currentTime);
+    }
+  } else {
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+    if (!wTrig.isTrackPlaying(currentBackgroundTrack)) {
+      StartNextSoundtrackSong(currentTime);
+    }
+#endif
   }
 }
 
 
 boolean AudioHandler::Update(unsigned long currentTime) {
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+  wTrig.update();
+#endif
+  boolean queueHasEntries = false;
   ManageBackgroundSong(currentTime);
   ServiceSoundQueue(currentTime);
   ServiceSoundCardQueue(currentTime);
-  ServiceNotificationQueue(currentTime);
-  return true;
+  if (ServiceNotificationQueue(currentTime)) queueHasEntries = true;
+  return queueHasEntries;
 }

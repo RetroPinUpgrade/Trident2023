@@ -22,10 +22,11 @@
  
 #include <Arduino.h>
 #include <EEPROM.h>
-//#define DEBUG_MESSAGES    1
 #define RPU_CPP_FILE
-#include "RPU_config.h"
+#include "RPU_Config.h"
 #include "RPU.h"
+
+#define DEBUG_MESSAGES  0
 
 #ifndef RPU_OS_HARDWARE_REV
 #define RPU_OS_HARDWARE_REV 1
@@ -51,6 +52,10 @@ boolean UsesM6800Processor = true;
 boolean UsesM6800Processor = false;
 #endif 
 
+#ifndef RPU_NUMBER_OF_PLAYER_DISPLAYS
+#define RPU_NUMBER_OF_PLAYER_DISPLAYS       4
+#endif
+
 #if (RPU_MPU_ARCHITECTURE<10) 
 
 #ifdef RPU_USE_EXTENDED_SWITCHES_ON_PB4
@@ -66,6 +71,7 @@ boolean UsesM6800Processor = false;
 #define DEFAULT_SOLENOID_STATE          0x1F
 #define ST5_CONTINUOUS_SOLENOID_BIT     0x80
 #else 
+#define RPU_NUM_SOLENOIDS               15
 #define NUM_SWITCH_BYTES                5
 #define NUM_SWITCH_BYTES_ON_U10_PORT_A  5
 #define MAX_NUM_SWITCHES                40
@@ -77,6 +83,8 @@ boolean UsesM6800Processor = false;
 #endif
 
 #elif (RPU_MPU_ARCHITECTURE >= 10) 
+boolean GameOverLine = true;
+#define RPU_NUM_SOLENOIDS             22
 #define NUM_SWITCH_BYTES              8
 #define MAX_NUM_SWITCHES              64
 #ifndef INTERRUPT_OCR1A_COUNTER
@@ -91,6 +99,10 @@ volatile byte DisplayCreditDigits[2];
 volatile byte DisplayCreditDigitEnable;
 volatile byte DisplayBIPDigits[2];
 volatile byte DisplayBIPDigitEnable;
+
+#if (RPU_MPU_ARCHITECTURE>=13)
+volatile byte DisplayCommas;
+#endif
 
 #if (RPU_MPU_ARCHITECTURE == 15)
 volatile byte DisplayText[2][RPU_OS_NUM_DIGITS];
@@ -111,12 +123,24 @@ byte DimDivisor2 = 3;
 volatile byte SwitchesMinus2[NUM_SWITCH_BYTES];
 volatile byte SwitchesMinus1[NUM_SWITCH_BYTES];
 volatile byte SwitchesNow[NUM_SWITCH_BYTES];
+byte SwitchInverter[NUM_SWITCH_BYTES] = {0x00};
+
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+#define MAX_IMMEDIATE_STREAMLINED_SOLENOIDS     10
+byte ImmediateSolenoidSwitchByte[MAX_IMMEDIATE_STREAMLINED_SOLENOIDS]; // Can't imagine more than 10 immediate solenoids
+byte ImmediateSolenoidSwitchFlag[MAX_IMMEDIATE_STREAMLINED_SOLENOIDS]; // Can't imagine more than 10 immediate solenoids
+byte ImmediateSolenoidSwitchMask[NUM_SWITCH_BYTES];
+#endif
+
 #ifdef RPU_OS_USE_DIP_SWITCHES
 byte DipSwitches[4];
 #endif
 
-
+#if (RPU_OS_HARDWARE_REV>2)
 #define SOLENOID_STACK_SIZE 150
+#else 
+#define SOLENOID_STACK_SIZE 60
+#endif
 #define SOLENOID_STACK_EMPTY 0xFF
 volatile byte SolenoidStackFirst;
 volatile byte SolenoidStackLast;
@@ -142,6 +166,9 @@ volatile byte SwitchStackFirst;
 volatile byte SwitchStackLast;
 volatile byte SwitchStack[SWITCH_STACK_SIZE];
 
+#ifdef RPU_OS_DEBUG_SWITCHES
+volatile boolean MaxSwitchesPerCycleHit = false;
+#endif
 
 // The WTYPE1 and WTYPE2 sound cards can only play one sound at a time,
 // so these structures allow the app to send in as many calls as they
@@ -595,7 +622,7 @@ void RPU_SetAddressPinsDirection(boolean pinsOutput) {
 
 void RPU_SetDataPinsDirection(boolean pinsOutput) {
   for (int count=0; count<8; count++) {
-    pinMode(22, pinsOutput?OUTPUT:INPUT);
+    pinMode(22+count, pinsOutput?OUTPUT:INPUT);
   }
 }
 
@@ -890,14 +917,15 @@ void WaitClockCycle(int numCycles=1) {
 #error "RPU_OS_HARDWARE_REV >100 requires ATMega2560, check RPU_Config.h and adjust settings"
 #endif
 
-#define RPU_VMA_PIN           40
-#define RPU_RW_PIN            3
-#define RPU_PHI2_PIN          39
-#define RPU_SWITCH_PIN        38
-#define RPU_BUFFER_DISABLE    5
-#define RPU_HALT_PIN          41
-#define RPU_RESET_PIN         42
-#define RPU_DIAGNOSTIC_PIN    44
+#define RPU_VMA_PIN                   40
+#define RPU_RW_PIN                    3
+#define RPU_PHI2_PIN                  39
+#define RPU_SWITCH_PIN                38
+#define RPU_BUFFER_DISABLE            5
+#define RPU_HALT_PIN                  41
+#define RPU_RESET_PIN                 42
+#define RPU_BA_PIN                    43
+#define RPU_DIAGNOSTIC_PIN            44
 #define RPU_DISABLE_PHI_FROM_MPU      7
 #define RPU_DISABLE_PHI_FROM_CPU      6
 #define RPU_BOARD_SEL_0               30
@@ -915,12 +943,12 @@ void RPU_SetAddressPinsDirection(boolean pinsOutput) {
 
 void RPU_SetDataPinsDirection(boolean pinsOutput) {
   for (int count=0; count<8; count++) {
-    pinMode(22, pinsOutput?OUTPUT:INPUT);
+    pinMode(22+count, pinsOutput?OUTPUT:INPUT);
   }
 }
 
 
-// REVISION 101 HARDWARE
+// REVISION 101/102 HARDWARE
 void RPU_DataWrite(int address, byte data) {
   
   // Set data pins to output
@@ -1269,7 +1297,12 @@ unsigned long RPU_TestPIAs() {
   unsigned long piaErrors = 0;
   
   byte piaResult = RPU_DataRead(PIA_DISPLAY_CONTROL_A);
-  if (piaResult!=0x3D) piaErrors |= RPU_RET_PIA_1_ERROR;
+  if (piaResult!=0x3D) {
+    piaErrors |= RPU_RET_PIA_1_ERROR;
+    if (DEBUG_MESSAGES) Serial.write("* Error with Display PIA\n");
+  } else {
+    if (DEBUG_MESSAGES) Serial.write("* No error with Display PIA\n");
+  }
   piaResult = RPU_DataRead(PIA_DISPLAY_CONTROL_B);
   if (piaResult!=0x3D) piaErrors |= RPU_RET_PIA_1_ERROR;
 
@@ -1348,6 +1381,11 @@ void RPU_PushToSwitchStack(byte switchNumber) {
   PushToSwitchStack(switchNumber);
 }
 
+#ifdef RPU_OS_DEBUG_SWITCHES
+boolean RPU_MaxSwitchesPerCycleHit() {
+  return MaxSwitchesPerCycleHit;
+}
+#endif
 
 byte RPU_PullFirstFromSwitchStack() {
   // If first and last are equal, there's nothing on the stack
@@ -1369,6 +1407,14 @@ boolean RPU_ReadSingleSwitchState(byte switchNum) {
   int switchBit = switchNum%8;
   if ( ((SwitchesNow[switchByte])>>switchBit) & 0x01 ) return true;
   else return false;
+}
+
+
+boolean RPU_SetSwitchInversion(byte switchNum) {
+  if (switchNum>=MAX_NUM_SWITCHES) return false;
+  byte oldSwitchInverter = SwitchInverter[switchNum/8];
+  SwitchInverter[switchNum/8] = oldSwitchInverter | (0x01 << (switchNum%8));
+  return true;
 }
 
 
@@ -1421,7 +1467,7 @@ int SpaceLeftOnSolenoidStack() {
 
 
 void RPU_PushToSolenoidStack(byte solenoidNumber, byte numPushes, boolean disableOverride) {
-  if (solenoidNumber>14) return;
+  if (solenoidNumber>=RPU_NUM_SOLENOIDS) return;
 
   // if the solenoid stack is disabled and this isn't an override push, then return
   if (!disableOverride && !SolenoidStackEnabled) return;
@@ -1492,6 +1538,7 @@ void RPU_UpdateTimedSolenoidStack(unsigned long curTime) {
 
 #if (RPU_MPU_ARCHITECTURE<10)
 
+// for ARCH < 10 (B/S)
 void RPU_SetCoinLockout(boolean lockoutOff, byte solbit) {
   if (!lockoutOff) {
     CurrentSolenoidByte = CurrentSolenoidByte & ~solbit;
@@ -1501,7 +1548,7 @@ void RPU_SetCoinLockout(boolean lockoutOff, byte solbit) {
   RPU_DataWrite(ADDRESS_U11_B, CurrentSolenoidByte);
 }
 
-
+// for ARCH < 10 (B/S)
 void RPU_SetDisableFlippers(boolean disableFlippers, byte solbit) {
   if (disableFlippers) {
     CurrentSolenoidByte = CurrentSolenoidByte | solbit;
@@ -1512,7 +1559,12 @@ void RPU_SetDisableFlippers(boolean disableFlippers, byte solbit) {
   RPU_DataWrite(ADDRESS_U11_B, CurrentSolenoidByte);
 }
 
+// for ARCH < 10 (B/S)
+boolean RPU_GetDisableFlippers(byte solbit) {
+  return  (CurrentSolenoidByte & solbit) ? true : false;
+}
 
+// for ARCH < 10 (B/S)
 void RPU_SetContinuousSolenoidBit(boolean bitOn, byte solbit) {
   if (bitOn) {
     CurrentSolenoidByte = CurrentSolenoidByte | solbit;
@@ -1522,8 +1574,7 @@ void RPU_SetContinuousSolenoidBit(boolean bitOn, byte solbit) {
   RPU_DataWrite(ADDRESS_U11_B, CurrentSolenoidByte);
 }
 
-
-
+// for ARCH < 10 (B/S)
 boolean RPU_FireContinuousSolenoid(byte solBit, byte numCyclesToFire) {
   if (NumCyclesBeforeRevertingSolenoidByte) return false;
 
@@ -1534,29 +1585,41 @@ boolean RPU_FireContinuousSolenoid(byte solBit, byte numCyclesToFire) {
   return true;
 }
 
-
+// for ARCH < 10 (B/S)
 byte RPU_ReadContinuousSolenoids() {
   return RPU_DataRead(ADDRESS_U11_B);
 }
 
-
+// for ARCH < 10 (B/S)
 void RPU_DisableSolenoidStack() {
   SolenoidStackEnabled = false;
 }
 
-
+// for ARCH < 10 (B/S)
 void RPU_EnableSolenoidStack() {
   SolenoidStackEnabled = true;
+}
+
+// for ARCH < 10 (B/S)
+boolean RPU_IsSolenoidStackEnabled() {
+  return SolenoidStackEnabled;
 }
 
 #elif (RPU_MPU_ARCHITECTURE>=10)
 void RPU_SetDisableFlippers(boolean disableFlippers, byte solbit) {
   (void)solbit;
+  GameOverLine = disableFlippers;
   if (disableFlippers) RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
   else RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x3C);
 }
 
+// for ARCH >= 10 (WMS)
+boolean RPU_GetDisableFlippers(byte solbit) {
+  return GameOverLine;
+}
 
+
+// for ARCH >= 10 (WMS)
 void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
   unsigned short oldCont = ContinuousSolenoidBits;
   if (solOn) ContinuousSolenoidBits |= (1<<solNum);
@@ -1570,24 +1633,31 @@ void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
   }
 }
 
+// for ARCH >= 10 (WMS)
 byte RPU_ReadContinuousSolenoids() {
   return ContinuousSolenoidBits;
 }
 
-
+// for ARCH >= 10 (WMS)
 void RPU_SetCoinLockout(boolean lockoutOn, byte solNum) {
-  RPU_SetContinuousSolenoid(lockoutOn, solNum);  
+  RPU_SetContinuousSolenoid(!lockoutOn, solNum);  
 }
 
+// for ARCH >= 10 (WMS)
 void RPU_DisableSolenoidStack() {
   SolenoidStackEnabled = false;
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
 }
 
-
+// for ARCH >= 10 (WMS)
 void RPU_EnableSolenoidStack() {
   SolenoidStackEnabled = true;
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x3C);
+}
+
+// for ARCH >= 10 (WMS)
+boolean RPU_IsSolenoidStackEnabled() {
+  return SolenoidStackEnabled;
 }
 
 
@@ -1601,16 +1671,36 @@ void RPU_EnableSolenoidStack() {
  *   Display Handling Functions
  */
 #if (RPU_MPU_ARCHITECTURE<15)
-byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagnitude, byte minDigits) {
+byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagnitude, byte minDigits, boolean showCommasByMagnitude) {
   if (displayNumber<0 || displayNumber>4) return 0;
 
   byte blank = 0x00;
+#if (RPU_MPU_ARCHITECTURE>=13)    
+  byte commaBit = 0x01 << (2*displayNumber);
+  if (!showCommasByMagnitude) {
+    DisplayCommas &= ~(commaBit | (commaBit*2));
+  }
+#endif
 
   for (int count=0; count<RPU_OS_NUM_DIGITS; count++) {
     blank = blank * 2;
     if (value!=0 || count<minDigits) blank |= 1;
+
+#if (RPU_MPU_ARCHITECTURE>=13)    
+    if (showCommasByMagnitude) {
+      if (value) {
+        if (count==3) DisplayCommas |= commaBit;
+        if (count==6) DisplayCommas |= (commaBit*2);
+      } else {
+        if (count==3) DisplayCommas &= ~(commaBit);
+        if (count==6) DisplayCommas &= ~(commaBit*2);
+      }
+    }
+#else
+    (void)showCommasByMagnitude;
+#endif    
     DisplayDigits[displayNumber][(RPU_OS_NUM_DIGITS-1)-count] = value%10;
-    value /= 10;    
+    value /= 10;
   }
 
   if (blankByMagnitude) DisplayDigitEnable[displayNumber] = blank;
@@ -1691,8 +1781,13 @@ void RPU_SetDisplayBallInPlay(int value, boolean displayOn, boolean showBothDigi
 
 #endif
 
-void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum) {
-  int displayDigit = (curTime/250)%10;
+void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum, byte digitValue) {
+  int displayDigit;
+  if (digitValue!=0xFF) {
+    displayDigit = digitValue%10;
+  } else {
+    displayDigit = (curTime/250)%10;
+  }
   unsigned long value;
 #if (RPU_OS_NUM_DIGITS==7)
   value = displayDigit*1111111;
@@ -1706,20 +1801,21 @@ void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum) {
   if (digitNum!=0) {
 #if (RPU_OS_NUM_DIGITS==7)
     displayNumToShow = (digitNum-1)/7;
-    displayBlank = (0x40)>>((digitNum-1)%7);
+    displayBlank = (0x01)<<((digitNum-1)%7);
 
 #ifdef RPU_OS_USE_6_DIGIT_CREDIT_DISPLAY_WITH_7_DIGIT_DISPLAYS
     if (displayNumToShow==4) {
-      displayBlank = (0x20)>>((digitNum-1)%6);
+      displayBlank = (0x01)<<((digitNum-1)%6);
     }
 #endif
     
 #else    
     displayNumToShow = (digitNum-1)/6;
-    displayBlank = (0x20)>>((digitNum-1)%6);
+    displayBlank = (0x01)<<((digitNum-1)%6);
 #endif
   }
 
+#if (RPU_NUMBER_OF_PLAYER_DISPLAYS==4)
   for (int count=0; count<5; count++) {
     if (digitNum) {
       RPU_SetDisplay(count, value);
@@ -1729,6 +1825,27 @@ void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum) {
       RPU_SetDisplay(count, value, false);
     }
   }
+#else
+  // show the two player displays
+  for (int count=0; count<2; count++) {
+    if (digitNum) {
+      RPU_SetDisplay(count, value);
+      if (count==displayNumToShow) RPU_SetDisplayBlank(count, displayBlank);
+      else RPU_SetDisplayBlank(count, 0);
+    } else {
+      RPU_SetDisplay(count, value, false);
+    }
+  }
+  // show credit/bip display
+  if (digitNum) {
+    RPU_SetDisplay(4, value);
+    if (displayNumToShow==2) RPU_SetDisplayBlank(4, displayBlank);
+    else RPU_SetDisplayBlank(4, 0);
+  } else {
+    RPU_SetDisplay(4, value, false);
+  }
+#endif
+  
 }
 
 void RPU_SetDisplayMatch(int value, boolean displayOn, boolean showBothDigits) {
@@ -1747,6 +1864,13 @@ void RPU_SetDisplayMatch(int value, boolean displayOn, boolean showBothDigits) {
 //   bit=   b0 b1 b2 b3 b4 b5
 void RPU_SetDisplayBlank(int displayNumber, byte bitMask) {
   if (displayNumber<0 || displayNumber>4) return;
+
+#if (RPU_MPU_ARCHITECTURE>=13) 
+  if (bitMask==0x00) {   
+    byte commaBit = 0x01 << (2*displayNumber);
+    DisplayCommas &= ~(commaBit | (commaBit*2));
+  }
+#endif
     
   DisplayDigitEnable[displayNumber] = bitMask;
 }
@@ -1822,7 +1946,7 @@ byte RPU_SetDisplayText(int displayNumber, char *text, boolean blankByLength) {
 }
 
 // Architectures with alpha store numbers as 7-seg
-byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagnitude, byte minDigits) {
+byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagnitude, byte minDigits, boolean showCommasByMagnitude) {
   if (displayNumber<0 || displayNumber>3) return 0;
 
   byte blank = 0x00;
@@ -1888,9 +2012,15 @@ void RPU_SetDimDivisor(byte level, byte divisor) {
   if (level==2) DimDivisor2 = divisor;
 }
 
+// left shift is iterative on Arduinos, so a bit array is suprisingly faster
+byte BitShiftValues[8] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+
 void RPU_SetLampState(int lampNum, byte s_lampState, byte s_lampDim, int s_lampFlashPeriod) {
   if (lampNum>=RPU_MAX_LAMPS || lampNum<0) return;
-  
+  byte lampRow = lampNum%8;
+  byte lampCol = lampNum/8;
+  byte lampBit = BitShiftValues[lampRow];
+
   if (s_lampState) {
     int adjustedLampFlash = s_lampFlashPeriod/50;
     
@@ -1899,23 +2029,23 @@ void RPU_SetLampState(int lampNum, byte s_lampState, byte s_lampDim, int s_lampF
     
     // Only turn on the lamp if there's no flash, because if there's a flash
     // then the lamp will be turned on by the ApplyFlashToLamps function
-    if (s_lampFlashPeriod==0) LampStates[lampNum/8] &= ~(0x01<<(lampNum%8));
+    if (s_lampFlashPeriod==0) LampStates[lampCol] &= ~(lampBit);
     LampFlashPeriod[lampNum] = adjustedLampFlash;
   } else {
-    LampStates[lampNum/8] |= (0x01<<(lampNum%8));
+    LampStates[lampCol] |= lampBit;
     LampFlashPeriod[lampNum] = 0;
   }
 
   if (s_lampDim & 0x01) {    
-    LampDim1[lampNum/8] |= (0x01<<(lampNum%8));
+    LampDim1[lampCol] |= lampBit;
   } else {
-    LampDim1[lampNum/8] &= ~(0x01<<(lampNum%8));
+    LampDim1[lampCol] &= ~lampBit;
   }
 
   if (s_lampDim & 0x02) {    
-    LampDim2[lampNum/8] |= (0x01<<(lampNum%8));
+    LampDim2[lampCol] |= lampBit;
   } else {
-    LampDim2[lampNum/8] &= ~(0x01<<(lampNum%8));
+    LampDim2[lampCol] &= ~lampBit;
   }
 
 }
@@ -1997,6 +2127,7 @@ void RPU_ClearVariables() {
   SwitchStackLast = 0;
 
 #if (RPU_MPU_ARCHITECTURE > 9) 
+  GameOverLine = true;
   // Reset sound stack
   SoundStackFirst = 0;
   SoundStackLast = 0;
@@ -2011,6 +2142,9 @@ void RPU_ClearVariables() {
     }
     DisplayDigitEnable[displayCount] = 0x00;
   }
+#if (RPU_MPU_ARCHITECTURE>=13)  
+  DisplayCommas = 0x00;
+#endif
 
   // Turn off all lamp states
   for (int lampBankCounter=0; lampBankCounter<RPU_NUM_LAMP_BANKS; lampBankCounter++) {
@@ -2030,7 +2164,41 @@ void RPU_ClearVariables() {
     SwitchesMinus2[switchCount] = 0xFF;
     SwitchesMinus1[switchCount] = 0xFF;
     SwitchesNow[switchCount] = 0xFF;
+    SwitchInverter[switchCount] = 0x00;
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS    
+    ImmediateSolenoidSwitchMask[switchCount] = 0x00;
+#endif    
   }
+
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS    
+  for (byte count=0; count<MAX_IMMEDIATE_STREAMLINED_SOLENOIDS; count++) {
+    ImmediateSolenoidSwitchByte[count] = 0x00;
+    ImmediateSolenoidSwitchFlag[count] = 0x00;
+  }
+
+  if (GameSwitches) {
+    for (byte count=0; count<NumGameSwitches; count++) {
+      if (GameSwitches[count].switchNum < MAX_NUM_SWITCHES) {
+        ImmediateSolenoidSwitchMask[GameSwitches[count].switchNum / 8] |= (0x01<< (GameSwitches[count].switchNum % 8));
+        ImmediateSolenoidSwitchByte[count] = GameSwitches[count].switchNum / 8;
+        ImmediateSolenoidSwitchFlag[count] = (0x01<< (GameSwitches[count].switchNum % 8));
+      }
+    }
+
+    if (DEBUG_MESSAGES) {
+      char buf[256];
+      for (byte count=0; count<NUM_SWITCH_BYTES; count++) {
+        sprintf(buf, "Switch mask byte %d = 0x%02X\n", count, ImmediateSolenoidSwitchMask[count]);
+        Serial.write(buf);
+      }
+      for (byte count=0; count<NumGameSwitches; count++) {
+        sprintf(buf, "Triggered sol switch=%d, byte=%d, mask=0x%02X\n", GameSwitches[count].switchNum, ImmediateSolenoidSwitchByte[count], ImmediateSolenoidSwitchFlag[count]);
+        Serial.write(buf);
+      }
+    }
+  
+  }  
+#endif  
 
   for (byte count=0; count<TIMED_SOLENOID_STACK_SIZE; count++) {
     TimedSolenoidStack[count].inUse = 0;
@@ -2414,6 +2582,8 @@ volatile int numberOfU10Interrupts = 0;
 volatile int numberOfU11Interrupts = 0;
 volatile byte InsideZeroCrossingInterrupt = 0;
 
+// INTERRUPT SERVICE ROUTINE
+// for ARCH 1 (B/S)
 ISR(TIMER1_COMPA_vect) {    //This is the interrupt request
   // Backup U10A
   byte backupU10A = RPU_DataRead(ADDRESS_U10_A);
@@ -2431,7 +2601,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request
   // Blank Displays
   RPU_DataWrite(ADDRESS_U10_A_CONTROL, RPU_DataRead(ADDRESS_U10_A_CONTROL) & 0xF7);
   // Set all 5 display latch strobes high
-  RPU_DataWrite(ADDRESS_U11_A, (RPU_DataRead(ADDRESS_U11_A)/* & 0x03*/) | 0x01);
+  RPU_DataWrite(ADDRESS_U11_A, (RPU_DataRead(ADDRESS_U11_A)) | 0x01);
   RPU_DataWrite(ADDRESS_U10_A, 0x0F);
 
   byte displayStrobeMask = 0x01;
@@ -2502,6 +2672,86 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request
 
 }
 
+/*
+ISR(TIMER1_COMPA_vect) {    //This is the interrupt request
+  // Backup U10A
+  byte backupU10A = RPU_DataRead(ADDRESS_U10_A);
+  
+  // Disable lamp decoders & strobe latch
+  RPU_DataWrite(ADDRESS_U10_A, 0xFF);
+  RPU_DataWrite(ADDRESS_U10_B_CONTROL, RPU_DataRead(ADDRESS_U10_B_CONTROL) | 0x08);
+  RPU_DataWrite(ADDRESS_U10_B_CONTROL, RPU_DataRead(ADDRESS_U10_B_CONTROL) & 0xF7);
+#ifdef RPU_OS_USE_AUX_LAMPS
+  // Also park the aux lamp board 
+  RPU_DataWrite(ADDRESS_U11_A_CONTROL, RPU_DataRead(ADDRESS_U11_A_CONTROL) | 0x08);
+  RPU_DataWrite(ADDRESS_U11_A_CONTROL, RPU_DataRead(ADDRESS_U11_A_CONTROL) & 0xF7);    
+#endif
+
+  // Blank Displays
+  RPU_DataWrite(ADDRESS_U10_A_CONTROL, RPU_DataRead(ADDRESS_U10_A_CONTROL) & 0xF7);
+  // Set all 5 display latch strobes high
+  RPU_DataWrite(ADDRESS_U11_A, (RPU_DataRead(ADDRESS_U11_A) & 0x03) | 0x01);
+  RPU_DataWrite(ADDRESS_U10_A, 0x0F);
+
+  // Write current display digits to 5 displays
+  for (int displayCount=0; displayCount<5; displayCount++) {
+
+    if (CurrentDisplayDigit<RPU_OS_NUM_DIGITS) {
+      // The BCD for this digit is in b4-b7, and the display latch strobes are in b0-b3 (and U11A:b0)
+      byte displayDataByte = ((DisplayDigits[displayCount][CurrentDisplayDigit])<<4) | 0x0F;
+      byte displayEnable = ((DisplayDigitEnable[displayCount])>>CurrentDisplayDigit)&0x01;
+
+      // if this digit shouldn't be displayed, then set data lines to 0xFX so digit will be blank
+      if (!displayEnable) displayDataByte = 0xFF;
+
+      // Set low the appropriate latch strobe bit
+      if (displayCount<4) {
+        displayDataByte &= ~(0x01<<displayCount);
+      }
+      // Write out the digit & strobe (if it's 0-3)
+      RPU_DataWrite(ADDRESS_U10_A, displayDataByte);
+      if (displayCount==4) {            
+        // Strobe #5 latch on U11A:b0
+        RPU_DataWrite(ADDRESS_U11_A, RPU_DataRead(ADDRESS_U11_A) & 0xFE);
+      }
+
+      // Need to delay a little to make sure the strobe is low for long enough
+      //WaitClockCycle(4);
+      delayMicroseconds(8);
+
+      // Put the latch strobe bits back high
+      if (displayCount<4) {
+        displayDataByte |= 0x0F;
+        RPU_DataWrite(ADDRESS_U10_A, displayDataByte);
+      } else {
+        RPU_DataWrite(ADDRESS_U11_A, RPU_DataRead(ADDRESS_U11_A) | 0x01);
+        
+        // Set proper display digit enable
+#ifdef RPU_OS_USE_7_DIGIT_DISPLAYS          
+        byte displayDigitsMask = (0x02<<CurrentDisplayDigit) | 0x01;
+#else
+        byte displayDigitsMask = (0x04<<CurrentDisplayDigit) | 0x01;
+#endif          
+        RPU_DataWrite(ADDRESS_U11_A, displayDigitsMask);
+      }
+    }
+  }
+
+  // Stop Blanking (current digits are all latched and ready)
+  RPU_DataWrite(ADDRESS_U10_A_CONTROL, RPU_DataRead(ADDRESS_U10_A_CONTROL) | 0x08);
+
+  // Restore 10A from backup
+  RPU_DataWrite(ADDRESS_U10_A, backupU10A);    
+
+  CurrentDisplayDigit = CurrentDisplayDigit + 1;
+  if (CurrentDisplayDigit>=RPU_OS_NUM_DIGITS) {
+    CurrentDisplayDigit = 0;
+    DisplayOffCycle ^= true;
+  }
+}
+*/
+
+
 void InterruptService3() {
   byte u10AControl = RPU_DataRead(ADDRESS_U10_A_CONTROL);
   if (u10AControl & 0x80) {
@@ -2548,9 +2798,19 @@ void InterruptService3() {
     byte switchCount;
     byte startingClosures;
     byte validClosures;
+#ifdef RPU_OS_DEBUG_SWITCHES
+    byte numberOfSwitchesSeen = 0;
+#endif
+
     for (switchCount=0; switchCount<NUM_SWITCH_BYTES; switchCount++) {
       SwitchesMinus2[switchCount] = SwitchesMinus1[switchCount];
       SwitchesMinus1[switchCount] = SwitchesNow[switchCount];
+#ifdef RPU_OS_DEBUG_SWITCHES
+      if (numberOfSwitchesSeen>8) {
+        MaxSwitchesPerCycleHit = true;
+        continue;
+      }
+#endif
 
       // Enable switch strobe
 #if defined(RPU_USE_EXTENDED_SWITCHES_ON_PB4) or defined(RPU_USE_EXTENDED_SWITCHES_ON_PB7)
@@ -2570,13 +2830,16 @@ void InterruptService3() {
       delayMicroseconds(RPU_OS_SWITCH_DELAY_IN_MICROSECONDS);
       
       // Read the switches
-      SwitchesNow[switchCount] = RPU_DataRead(ADDRESS_U10_B);
+      SwitchesNow[switchCount] = RPU_DataRead(ADDRESS_U10_B) ^ SwitchInverter[switchCount];
 
       //Unset the strobe
       RPU_DataWrite(ADDRESS_U10_A, 0x00);
 #if defined(RPU_USE_EXTENDED_SWITCHES_ON_PB4) or defined(RPU_USE_EXTENDED_SWITCHES_ON_PB7)
       RPU_SetContinuousSolenoidBit(false, ST5_CONTINUOUS_SOLENOID_BIT);
 #endif 
+
+
+#ifndef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
 
       // Some switches need to trigger immediate closures (bumpers & slings)
       startingClosures = (SwitchesNow[switchCount]) & (~SwitchesMinus1[switchCount]);
@@ -2633,6 +2896,59 @@ void InterruptService3() {
           validClosures = validClosures>>1;
         }        
       }
+
+#else 
+
+      // Streamlined version of solenoid handling
+      boolean immediateSolenoidFired = false;
+      // Some switches need to trigger immediate closures (bumpers & slings)
+      startingClosures = (SwitchesNow[switchCount]) & (~SwitchesMinus1[switchCount]);
+      if (startingClosures & ImmediateSolenoidSwitchMask[switchCount]) {
+        // This switch requires an immediate solenoid response
+        for (byte immediateTrigger=0; immediateTrigger<NumGamePrioritySwitches; immediateTrigger++) {
+          if (ImmediateSolenoidSwitchByte[immediateTrigger]==switchCount && (ImmediateSolenoidSwitchFlag[immediateTrigger]&startingClosures)) {
+            // Start firing this solenoid (just one until the closure is validate
+            PushToFrontOfSolenoidStack(GameSwitches[immediateTrigger].solenoid, 1);
+            immediateSolenoidFired = true;            
+          }
+        }
+      }
+
+      immediateSolenoidFired = false;
+      validClosures = (SwitchesNow[switchCount] & SwitchesMinus1[switchCount]) & ~SwitchesMinus2[switchCount];
+      // If there is a valid switch closure (off, on, on)
+      if (validClosures) {
+
+        // Fire solenoid, if it's registered to this switch
+        if (validClosures & ImmediateSolenoidSwitchMask[switchCount]) {
+          for (byte immediateTrigger=0; immediateTrigger<NumGameSwitches; immediateTrigger++) {
+            if (ImmediateSolenoidSwitchByte[immediateTrigger]==switchCount && (ImmediateSolenoidSwitchFlag[immediateTrigger]&validClosures)) {
+              if (immediateTrigger<NumGamePrioritySwitches && immediateSolenoidFired==false) {
+                PushToFrontOfSolenoidStack(GameSwitches[immediateTrigger].solenoid, GameSwitches[immediateTrigger].solenoidHoldTime);
+              } else {
+                RPU_PushToSolenoidStack(GameSwitches[immediateTrigger].solenoid, GameSwitches[immediateTrigger].solenoidHoldTime);
+              }
+            }  
+          }
+        }
+
+        // Now push any switches to the stack
+        byte validSwitchNum= switchCount * 8;
+        for (byte count=0; count<8; count++) {
+          if (validClosures & 0x01) {
+            PushToSwitchStack(validSwitchNum);
+#ifdef RPU_OS_DEBUG_SWITCHES
+            numberOfSwitchesSeen += 1;
+#endif
+          }
+          validSwitchNum += 1;
+          validClosures /= 2;
+        }
+        
+      }
+
+#endif
+
 
       // There are no port reads or writes for the rest of the loop, 
       // so we can allow the display interrupt to fire
@@ -2695,7 +3011,7 @@ void InterruptService3() {
         interrupts();
         RPU_DataWrite(ADDRESS_U10_A, 0xFF);
         noInterrupts();
-      
+
         // Latch address & strobe
         RPU_DataWrite(ADDRESS_U10_A, lampData);
 #ifdef RPU_SLOW_DOWN_LAMP_STROBE      
@@ -2721,7 +3037,7 @@ void InterruptService3() {
         if (numberOfU10Interrupts%DimDivisor1) lampOutput |= (LampDim1[lampByteCount] * nibbleOffset);
         if (numberOfU10Interrupts%DimDivisor2) lampOutput |= (LampDim2[lampByteCount] * nibbleOffset);
 
-        RPU_DataWrite(ADDRESS_U10_A, lampOutput & 0xF0);
+        RPU_DataWrite(ADDRESS_U10_A, lampOutput | 0x0F);
 #ifdef RPU_SLOW_DOWN_LAMP_STROBE      
         delayMicroseconds(2);
 #endif      
@@ -2736,8 +3052,13 @@ void InterruptService3() {
     RPU_DataWrite(ADDRESS_U10_B_CONTROL, RPU_DataRead(ADDRESS_U10_B_CONTROL) | 0x08);
     RPU_DataWrite(ADDRESS_U10_B_CONTROL, RPU_DataRead(ADDRESS_U10_B_CONTROL) & 0xF7);
 
-    for (int lampByteCount=8; lampByteCount<RPU_NUM_LAMP_BANKS; lampByteCount++) {
+    // For the first four bits of lamps, we're going to look at LampStates[7] again
+    // and use those top 4 bits that we didn't use before. Then we're going
+    // to move on with bytes 8, 9, and 10 for the remaining 24 bits of data
+    byte auxBankNum = 0;
+    for (int lampByteCount=7; lampByteCount<RPU_NUM_LAMP_BANKS; lampByteCount++) {
       for (byte nibbleCount=0; nibbleCount<2; nibbleCount++) {
+        if (lampByteCount==7) nibbleCount = 1; // skip the first nibble of byte 7 because it belongs to primary lamps
         byte nibbleOffset = (nibbleCount)?1:16;
         byte lampOutput = (LampStates[lampByteCount] * nibbleOffset);
         // Every other time through the cycle, we OR in the dim variable
@@ -2747,7 +3068,7 @@ void InterruptService3() {
 
         // The data will be in the upper nibble, but we need the bank count in the lower
         lampOutput &= 0xF0;
-        lampOutput += ((lampByteCount-8)*2+nibbleOffset);
+        lampOutput += auxBankNum;
 
         interrupts();
         RPU_DataWrite(ADDRESS_U10_A, 0xFF);
@@ -2757,6 +3078,8 @@ void InterruptService3() {
         RPU_DataWrite(ADDRESS_U11_A_CONTROL, RPU_DataRead(ADDRESS_U11_A_CONTROL) | 0x08);
         RPU_DataWrite(ADDRESS_U11_A_CONTROL, RPU_DataRead(ADDRESS_U11_A_CONTROL) & 0xF7);    
         RPU_DataWrite(ADDRESS_U10_A, lampOutput);
+        
+        auxBankNum += 1;
       }
     }
 #endif    
@@ -2917,43 +3240,55 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
 
 #if (RPU_OS_HARDWARE_REV==1) or (RPU_OS_HARDWARE_REV==2)
   (void)creditResetSwitch;
+
+  if (initOptions&( RPU_CMD_BOOT_ORIGINAL | RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET | 
+                    RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED | RPU_CMD_AUTODETECT_ARCHITECTURE ) ) {
+    retResult |= RPU_RET_OPTION_NOT_SUPPORTED;
+  }
+  
   if (LookFor6800Activity()) {
     if (initOptions&RPU_CMD_INIT_AND_RETURN_EVEN_IF_ORIGINAL_CHOSEN) {
       retResult |= RPU_RET_ORIGINAL_CODE_REQUESTED;
+      return retResult;
     } else {
       while (1);
     }
   }
-  if (initOptions&( RPU_CMD_BOOT_ORIGINAL | RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_NEW_IF_CREDIT_RESET | 
-                    RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED | RPU_CMD_AUTODETECT_ARCHITECTURE ) ) {
-    retResult |= RPU_RET_OPTION_NOT_SUPPORTED;
-  }
 #elif (RPU_OS_HARDWARE_REV==3)
   (void)creditResetSwitch;
 
-  if (initOptions&( RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_NEW_IF_CREDIT_RESET | 
-                    RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED | RPU_CMD_AUTODETECT_ARCHITECTURE ) ) {
+  if (DEBUG_MESSAGES) Serial.write("* Starting Setup for Rev 3\n");
+
+  if (initOptions&( RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET | 
+                    RPU_CMD_AUTODETECT_ARCHITECTURE ) ) {
     retResult |= RPU_RET_OPTION_NOT_SUPPORTED;
   }
 
   pinMode(13, INPUT);
   boolean switchStateClosed = digitalRead(13) ? false : true;
   boolean bootToOriginal = false;
-  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) || 
-        (switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED)) ||
-        (!switchStateClosed && (initOptions&RPU_CMD_BOOT_NEW_IF_SWITCH_CLOSED)) ) {
-    bootToOriginal = true;
+
+  if (switchStateClosed) {
+    retResult |= RPU_RET_SELECTOR_SWITCH_ON;
   }
-  if ((initOptions & RPU_CMD_BOOT_NEW) || (switchStateClosed && (initOptions&RPU_CMD_BOOT_NEW_IF_SWITCH_CLOSED))) {
-    bootToOriginal = false;
+
+  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) ||
+        (switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED)) ||
+        (!switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_NOT_SWITCH_CLOSED)) ) {
+    bootToOriginal = true;
   }
 
   if (bootToOriginal) {
+
+    if (DEBUG_MESSAGES) Serial.write("* Asked to boot to original\n");
+    if (DEBUG_MESSAGES) delay(100);
+
     // Let the 680X run 
     pinMode(14, OUTPUT); // Halt
     digitalWrite(14, HIGH);
     if (initOptions&RPU_CMD_INIT_AND_RETURN_EVEN_IF_ORIGINAL_CHOSEN) {
       retResult |= RPU_RET_ORIGINAL_CODE_REQUESTED;
+      return retResult;
     } else {
       while (1);
     }
@@ -3003,7 +3338,7 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
   }
 
   boolean creditResetButtonHit = false;
-  if ( creditResetSwitch!=0xFF && (initOptions & (RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_NEW_IF_CREDIT_RESET))) {
+  if ( creditResetSwitch!=0xFF && (initOptions & (RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET))) {
     // We have to check the credit/reset button to honor the init request
     creditResetButtonHit = CheckCreditResetSwitchArch1(creditResetSwitch);
     if (creditResetButtonHit) {
@@ -3012,17 +3347,31 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
   }
 
   boolean bootToOriginal = false;
-  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) || 
+  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) ||
         (switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED)) ||
-        (!creditResetButtonHit && (initOptions&RPU_CMD_BOOT_NEW_IF_CREDIT_RESET)) ||
-        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET)) ) {
+        (!switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_NOT_SWITCH_CLOSED)) ||
+        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET)) ||
+        (!creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET)) ) {
     bootToOriginal = true;
   }
-  if (  (initOptions & RPU_CMD_BOOT_NEW) || 
-        (switchStateClosed && (initOptions&RPU_CMD_BOOT_NEW_IF_SWITCH_CLOSED)) ||
-        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_NEW_IF_CREDIT_RESET)) ) {
-    bootToOriginal = false;
-  }
+
+#if (RPU_OS_HARDWARE_REV==102)
+  // We need to make sure the clock direction
+  // buffers are set the correct direction
+  if (UsesM6800Processor) {
+    pinMode(RPU_DISABLE_PHI_FROM_MPU, OUTPUT);
+    digitalWrite(RPU_DISABLE_PHI_FROM_MPU, 0);
+    pinMode(RPU_DISABLE_PHI_FROM_CPU, OUTPUT);
+    digitalWrite(RPU_DISABLE_PHI_FROM_CPU, 1);
+    retResult |= RPU_RET_6800_DETECTED;
+  } else {
+    pinMode(RPU_DISABLE_PHI_FROM_MPU, OUTPUT);
+    digitalWrite(RPU_DISABLE_PHI_FROM_MPU, 1);
+    pinMode(RPU_DISABLE_PHI_FROM_CPU, OUTPUT);
+    digitalWrite(RPU_DISABLE_PHI_FROM_CPU, 0);
+    retResult |= RPU_RET_6802_OR_8_DETECTED;
+  }    
+#endif
 
   if (bootToOriginal) {
     // If the options guide us to original code, boot to original
@@ -3034,23 +3383,6 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
     pinMode(RPU_VMA_PIN, INPUT); // VMA
     pinMode(RPU_RW_PIN, INPUT); // R/W
 
-#if (RPU_OS_HARDWARE_REV==102)
-    // We need to make sure the clock direction
-    // buffers are set the correct direction
-    if (UsesM6800Processor) {
-      pinMode(RPU_DISABLE_PHI_FROM_MPU, OUTPUT);
-      digitalWrite(RPU_DISABLE_PHI_FROM_MPU, 0);
-      pinMode(RPU_DISABLE_PHI_FROM_CPU, OUTPUT);
-      digitalWrite(RPU_DISABLE_PHI_FROM_CPU, 1);
-      retResult |= RPU_RET_6800_DETECTED;
-    } else {
-      pinMode(RPU_DISABLE_PHI_FROM_MPU, OUTPUT);
-      digitalWrite(RPU_DISABLE_PHI_FROM_MPU, 1);
-      pinMode(RPU_DISABLE_PHI_FROM_CPU, OUTPUT);
-      digitalWrite(RPU_DISABLE_PHI_FROM_CPU, 0);
-      retResult |= RPU_RET_6802_OR_8_DETECTED;
-    }    
-#endif
     // Set all the pins to input so they'll stay out of the way
     RPU_SetDataPinsDirection(RPU_PINS_INPUT);
     RPU_SetAddressPinsDirection(RPU_PINS_INPUT);
@@ -3068,10 +3400,24 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
 
 #endif  
 
+  if (DEBUG_MESSAGES) {
+    Serial.write("* About to init Arduino ports\n");
+    delay(100);  
+  }
   SetupArduinoPorts();
 
   // Prep the address bus (all lines zero)
+  if (DEBUG_MESSAGES) {
+    Serial.write("* About to data read\n");
+    delay(100);  
+  }
   RPU_DataRead(0);
+
+  if (DEBUG_MESSAGES) {
+    Serial.write("* DataRead(0) done\n");
+    delay(100);  
+  }
+  
   // Set up the PIAs
   InitializeU10PIA();
   InitializeU11PIA();
@@ -3089,6 +3435,12 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
   // Reset address bus
   RPU_DataRead(0);
   RPU_ClearVariables();
+
+  if (DEBUG_MESSAGES) {
+    Serial.write("* About to hook interrupts\n");
+    delay(100);  
+  }
+  
   RPU_HookInterrupts();
   RPU_DataRead(0);  // Reset address bus
 
@@ -3132,6 +3484,7 @@ byte BlankingBit[16] = {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x02, 0x
 volatile byte UpDownPassCounter = 0;
 
 // INTERRUPT HANDLER
+// for ARCH 10 (WMS)
 ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz)
 
   byte displayControlPortB = RPU_DataRead(PIA_DISPLAY_CONTROL_B);
@@ -3175,22 +3528,49 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
   // Create display data
   byte digit1 = 0x0F, digit2 = 0x0F;
   byte blankingBit = BlankingBit[DisplayStrobe];
+  boolean comma12 = false, comma34 = false;
+
   if (DisplayStrobe==0) {
     if (DisplayBIPDigitEnable&blankingBit) digit1 = DisplayBIPDigits[0];
     if (DisplayCreditDigitEnable&blankingBit) digit2 = DisplayCreditDigits[0];
   } else if (DisplayStrobe<8) {
     if (DisplayDigitEnable[0]&blankingBit) digit1 = DisplayDigits[0][DisplayStrobe-1];
     if (DisplayDigitEnable[2]&blankingBit) digit2 = DisplayDigits[2][DisplayStrobe-1];
+
+    if (DisplayStrobe==1) {
+      if (DisplayCommas&0x02) comma12 = true;
+      if (DisplayCommas&0x20) comma34 = true;  
+    } else if (DisplayStrobe==4) {
+      if (DisplayCommas&0x01) comma12 = true;
+      if (DisplayCommas&0x10) comma34 = true;  
+    }
+    
   } else if (DisplayStrobe==8) {
     if (DisplayBIPDigitEnable&blankingBit) digit1 = DisplayBIPDigits[1];
     if (DisplayCreditDigitEnable&blankingBit) digit2 = DisplayCreditDigits[1];
   } else {
     if (DisplayDigitEnable[1]&blankingBit) digit1 = DisplayDigits[1][DisplayStrobe-9];
     if (DisplayDigitEnable[3]&blankingBit) digit2 = DisplayDigits[3][DisplayStrobe-9];
+
+    if (DisplayStrobe==9) {
+      if (DisplayCommas&0x08) comma12 = true;
+      if (DisplayCommas&0x80) comma34 = true;  
+    } else if (DisplayStrobe==12) {
+      if (DisplayCommas&0x04) comma12 = true;
+      if (DisplayCommas&0x40) comma34 = true;  
+    }
+  
   }
   // Show current display digit
   RPU_DataWrite(PIA_DISPLAY_PORT_A, BoardLEDs|DisplayStrobe);
   RPU_DataWrite(PIA_DISPLAY_PORT_B, digit1*16 | (digit2&0x0F));
+
+  // show commas
+  byte commaByte = RPU_DataRead(PIA_SOUND_COMMA_PORT_B) & 0x3F;
+  if (comma12) commaByte |= 0x80;
+  if (comma34) commaByte |= 0x40;
+  RPU_DataWrite(PIA_SOUND_COMMA_PORT_B, commaByte);
+  
 #else
   // Create display data
   byte digit1 = 0x0F, digit2 = 0x0F;
@@ -3322,7 +3702,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
 #elif defined(RPU_OS_USE_WTYPE_2_SOUND)
     unsigned short soundOn = PullFirstFromSoundStack();
     if (soundOn!=SOUND_STACK_EMPTY) {
-      RPU_DataWrite(PIA_SOUND_COMMA_PORT_A, (~soundOn) & 0x7F);      
+      RPU_DataWrite(PIA_SOUND_COMMA_PORT_A, (~soundOn) & 0x7F);
     } else {
       RPU_DataWrite(PIA_SOUND_COMMA_PORT_A, 0x7F);
     }
@@ -3392,6 +3772,11 @@ boolean CheckCreditResetSwitchArch10(byte creditResetButton) {
 
   // Read switch input
   byte switchValues = RPU_DataRead(PIA_SWITCH_PORT_A);
+  if (DEBUG_MESSAGES) {
+    char buf[128];
+    sprintf(buf, "* switch return = 0x%02X\n", switchValues);
+    Serial.write(buf);
+  }
   RPU_DataWrite(PIA_SWITCH_PORT_B, 0);
 
   if (switchValues & returnLine) return true;
@@ -3405,6 +3790,8 @@ boolean CheckCreditResetSwitchArch10(byte creditResetButton) {
 unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditResetSwitch) {
   unsigned long retResult = RPU_RET_NO_ERRORS;
 
+  if (DEBUG_MESSAGES) Serial.write("* Init start\n");
+  
   // put the 680X buffers into tri-state
   pinMode(RPU_BUFFER_DISABLE, OUTPUT);
   digitalWrite(RPU_BUFFER_DISABLE, 1);
@@ -3415,6 +3802,8 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   digitalWrite(RPU_HALT_PIN, 0);  
   pinMode(RPU_RESET_PIN, OUTPUT); 
   digitalWrite(RPU_RESET_PIN, 0); 
+  pinMode(RPU_BA_PIN, OUTPUT);
+  digitalWrite(RPU_BA_PIN, 0);
 
   // Determine if we can detect a 
   // 6800 or 6802/8 and possibly override
@@ -3427,11 +3816,17 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   // Set VMA, R/W, and PHI2 to OUTPUT
   pinMode(RPU_VMA_PIN, OUTPUT);
   pinMode(RPU_RW_PIN, OUTPUT);
-  if (!UsesM6800Processor) pinMode(RPU_PHI2_PIN, OUTPUT);
-  else pinMode(RPU_PHI2_PIN, INPUT);
+  if (!UsesM6800Processor) {
+    pinMode(RPU_PHI2_PIN, OUTPUT);
+    if (DEBUG_MESSAGES) Serial.write("* compiled for 6802 or 6808\n");
+  } else {
+    pinMode(RPU_PHI2_PIN, INPUT);
+    if (DEBUG_MESSAGES) Serial.write("* compiled for 6800\n");
+  }
   // Make sure PIA IV (solenoid) CB2 is off so that solenoids are off
   RPU_SetAddressPinsDirection(RPU_PINS_OUTPUT);  
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x30);
+  GameOverLine = true;
   
   delay(1000);
   boolean switchStateClosed = false;
@@ -3442,7 +3837,7 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   }
 
   boolean creditResetButtonHit = false;
-  if ( creditResetSwitch!=0xFF && (initOptions & (RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_NEW_IF_CREDIT_RESET))) {
+  if ( creditResetSwitch!=0xFF && (initOptions & (RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET))) {
     // We have to check the credit/reset button to honor the init request
     creditResetButtonHit = CheckCreditResetSwitchArch10(creditResetSwitch);
     if (creditResetButtonHit) {
@@ -3451,16 +3846,18 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   }
 
   boolean bootToOriginal = false;
-  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) || 
-        (switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED)) ||
-        (!creditResetButtonHit && (initOptions&RPU_CMD_BOOT_NEW_IF_CREDIT_RESET)) ||
-        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET)) ) {
+
+  if (  (initOptions & RPU_CMD_BOOT_ORIGINAL) ||
+        (switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_SWITCH_CLOSED))  ||
+        (!switchStateClosed && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_NOT_SWITCH_CLOSED))  ||
+        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET))  ||
+        (!creditResetButtonHit && (initOptions&RPU_CMD_BOOT_ORIGINAL_IF_NOT_CREDIT_RESET)) ) {
+    if (DEBUG_MESSAGES) {
+      char buf[128];
+      sprintf(buf, "* Booting to original (switch=%d, CR=%d)\n", switchStateClosed, creditResetButtonHit);
+      Serial.write(buf);
+    }
     bootToOriginal = true;
-  }
-  if (  (initOptions & RPU_CMD_BOOT_NEW) || 
-        (switchStateClosed && (initOptions&RPU_CMD_BOOT_NEW_IF_SWITCH_CLOSED)) ||
-        (creditResetButtonHit && (initOptions&RPU_CMD_BOOT_NEW_IF_CREDIT_RESET)) ) {
-    bootToOriginal = false;
   }
 
   if (bootToOriginal) {
@@ -3472,6 +3869,7 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
     pinMode(RPU_PHI2_PIN, INPUT); // CLOCK
     pinMode(RPU_VMA_PIN, INPUT); // VMA
     pinMode(RPU_RW_PIN, INPUT); // R/W
+    pinMode(RPU_BA_PIN, INPUT);
 
 #if (RPU_OS_HARDWARE_REV==102)
     // We need to make sure the clock direction
@@ -3502,9 +3900,15 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
     digitalWrite(RPU_RESET_PIN, 1);
 
     if (initOptions&RPU_CMD_INIT_AND_RETURN_EVEN_IF_ORIGINAL_CHOSEN) {
+      if (DEBUG_MESSAGES) { 
+        Serial.write("* original requested\n");
+      }
       retResult |= RPU_RET_ORIGINAL_CODE_REQUESTED;
       return retResult;
     } else {
+      if (DEBUG_MESSAGES) {
+        Serial.write("* original requested, halting\n");      
+      }
       while (1);
     }
   }
@@ -3517,7 +3921,12 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   RPU_ClearVariables();
   RPU_SetAddressPinsDirection(RPU_PINS_OUTPUT);
   RPU_InitializePIAs();
-  if (initOptions&RPU_CMD_PERFORM_MPU_TEST) retResult |= RPU_TestPIAs();
+  if (initOptions&RPU_CMD_PERFORM_MPU_TEST) {
+    if (DEBUG_MESSAGES) Serial.write("* Going to test PIAs\n");
+    retResult |= RPU_TestPIAs();
+  } else {
+    if (DEBUG_MESSAGES) Serial.write("* Not asked to test PIAs\n");    
+  }
   RPU_SetupInterrupt();
 
   return retResult;
@@ -3526,12 +3935,22 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
 
 #endif
 
+#if (DEBUG_MESSAGES==1)
+unsigned long LastSwitchReport = 0;
+#endif
+
 void RPU_Update(unsigned long currentTime) {
+
+  if (RPU_MPU_ARCHITECTURE==1) {
+    RPU_DataRead(0);
+  }
+  
   RPU_ApplyFlashToLamps(currentTime);
   RPU_UpdateTimedSolenoidStack(currentTime);
 #if (RPU_MPU_ARCHITECTURE>=10) && (defined(RPU_OS_USE_WTYPE_1_SOUND) || defined(RPU_OS_USE_WTYPE_2_SOUND))
   RPU_UpdateTimedSoundStack(currentTime);
 #endif
+
 }
 
 

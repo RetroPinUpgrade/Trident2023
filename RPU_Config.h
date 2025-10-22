@@ -33,7 +33,7 @@
 // Hardware Rev 100 (different order of magnitude because it's a different approach) plugs into the CPU socket
 // Hardware Rev 101 - first RPU CPU interposer release board
 // Hardware Rev 102 - second RPU (with display and WIFI socket)
-#define RPU_OS_HARDWARE_REV   102
+#define RPU_OS_HARDWARE_REV   101
 
 // Available Architectures (0-9 is for B/S Boards, 10-19 is for W)
 //  RPU_MPU_ARCHITECTURE 1 = -17, -35, 100, 200, or compatible
@@ -54,7 +54,7 @@
 //#define RPU_OS_USE_DIP_SWITCHES 
 //#define RPU_OS_USE_S_AND_T
 //#define RPU_OS_USE_DASH51
-//#define RPU_OS_USE_SB100
+#define RPU_OS_USE_SB100
 //#define RPU_OS_USE_SB300
 //#define RPU_OS_USE_WAV_TRIGGER
 #define RPU_OS_USE_WAV_TRIGGER_1p3
@@ -66,7 +66,8 @@
 //#define RPU_OS_USE_WTYPE_1_SOUND
 //#define RPU_OS_USE_WTYPE_2_SOUND
 //#define RPU_OS_USE_W11_SOUND
-
+#define RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+#define RPU_OS_DEBUG_SWITCHES
 
 
 
@@ -119,7 +120,7 @@
 #define RPU_OS_TIMING_LOOP_PADDING_IN_MICROSECONDS  70
 
 // Fast boards might need a slower lamp strobe
-#define RPU_OS_SLOW_DOWN_LAMP_STROBE  0
+//#define RPU_OS_SLOW_DOWN_LAMP_STROBE  0
 
 #ifdef RPU_OS_USE_AUX_LAMPS
 #define RPU_NUM_LAMP_BANKS 11
